@@ -1,0 +1,31 @@
+# ---- Lightweight inference-only container ----
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3-pip \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy only what's needed for inference.
+COPY pyproject.toml .
+COPY env/__init__.py ./env/
+COPY env/tetris_env.py ./env/
+COPY env/state_encoder.py ./env/
+COPY env/reward_calculator.py ./env/
+COPY agent/__init__.py ./agent/
+COPY agent/model.py ./agent/
+COPY agent/noisy_layers.py ./agent/
+COPY agent/action_mask.py ./agent/
+COPY inference/ ./inference/
+
+# Install minimal dependencies.
+RUN pip install --no-cache-dir -e ".[inference]" && \
+    pip install --no-cache-dir onnxruntime-gpu
+
+# Default model path can be overridden via volume mount or env var.
+ENV MODEL_PATH=/app/model/tetris_ai.onnx
+
+# Run evaluation on the model.
+CMD ["python3", "scripts/eval.py", "--model", "${MODEL_PATH}"]

@@ -1,0 +1,29 @@
+# Tetris environment configuration — standard Guideline rules.
+env:
+  cols: 10
+  rows: 20
+  hidden_rows: 2
+  bag_type: "7bag"  # "7bag" or "random"
+  lock_delay_ms: 500
+  lock_moves_max: 15
+  next_queue_size: 4
+  max_steps: 10000
+
+  # Gravity curve (ms per drop, level 1 = first entry).
+  gravity_curve: [1000, 800, 650, 500, 400, 320, 250, 180, 130, 90, 70, 55, 45, 35, 28, 22, 17, 14, 11, 9]
+  level_up_lines: 10
+
+  # Scoring.
+  scoring:
+    lines: {1: 100, 2: 300, 3: 500, 4: 800}
+    hard_drop: 2
+    soft_drop: 1
+
+  # Reward shaping weights.
+  reward_weights:
+    height: 0.3
+    holes: 1.5
+    bumpiness: 0.2
+    well: 0.5
+    survival: 0.01
+    death: -100.0

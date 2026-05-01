@@ -1,0 +1,38 @@
+# Rainbow DQN training configuration.
+training:
+  algorithm: "dqn"
+  total_steps: 50_000_000
+  eval_every: 10_000
+  eval_episodes: 100
+  save_every: 50_000
+  log_every: 100
+  num_envs: 64
+  use_pretrain: true
+  num_pretrain_episodes: 1000
+  pretrain_epochs: 50
+  device: "cuda"
+  seed: 42
+
+dqn:
+  gamma: 0.99
+  n_step: 5
+  lr: 6.25e-5          # Adam learning rate
+  batch_size: 32
+  train_every: 4        # Train every N environment steps
+  target_update_freq: 8000
+  target_update_tau: 0.005
+  use_hard_update: true
+  replay_capacity: 1_000_000
+  per_alpha: 0.6         # PER priority exponent
+  per_beta_start: 0.4    # IS correction start
+  per_beta_end: 1.0      # IS correction end
+  per_beta_frames: 10_000_000
+  grad_clip_norm: 10.0
+
+network:
+  cnn_channels: 32
+  hidden_dim: 128
+  feature_dim: 53
+  num_actions: 112
+  use_noisy: true
+  sigma_init: 0.017

@@ -1,0 +1,17 @@
+# Experiment config: baseline Rainbow DQN.
+# Inherit from env/standard and training/dqn_rainbow.
+# Usage: python scripts/train.py --config configs/experiment/baseline.yaml
+
+defaults:
+  - /env/tetris_standard
+  - /training/dqn_rainbow
+
+experiment:
+  name: "baseline_rainbow"
+  tags: ["baseline", "dqn", "rainbow"]
+  notes: "Baseline Rainbow DQN with 64 parallel envs, pretrained on Dellacherie."
+
+training:
+  total_steps: 50_000_000
+  use_wandb: true
+  wandb_project: "tetris-ai"

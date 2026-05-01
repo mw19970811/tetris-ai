@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tetris-ai"
+version = "0.1.0"
+description = "Reinforcement Learning Tetris AI Engine"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10,<3.13"
+
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "gymnasium>=0.29.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "wandb>=0.15.0",
+    "tensorboard>=2.13.0",
+]
+inference = [
+    "onnxruntime>=1.16.0",
+    "onnx>=1.14.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+all = [
+    "tetris-ai[train,inference,dev]",
+]
+
+[project.scripts]
+tetris-train = "scripts.train:main"
+tetris-play = "scripts.play:main"
+tetris-eval = "scripts.eval:main"
+tetris-export = "inference.python.export:main"
+
+[tool.setuptools.packages.find]
+include = ["env*", "agent*", "trainer*", "inference*", "scripts*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

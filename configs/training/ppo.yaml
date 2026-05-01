@@ -1,0 +1,32 @@
+# PPO training configuration (alternative to DQN).
+training:
+  algorithm: "ppo"
+  total_steps: 50_000_000
+  eval_every: 10_000
+  eval_episodes: 100
+  save_every: 50_000
+  log_every: 100
+  num_envs: 64
+  use_pretrain: false
+  device: "cuda"
+  seed: 42
+
+ppo:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  lr: 2.5e-4
+  batch_size: 256
+  mini_batch_size: 64
+  n_epochs: 4
+  max_grad_norm: 0.5
+  rollout_steps: 2048
+  num_envs: 64
+
+network:
+  cnn_channels: 32
+  hidden_dim: 128
+  feature_dim: 53
+  num_actions: 112

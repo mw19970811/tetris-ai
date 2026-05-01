@@ -1,0 +1,1788 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>俄罗斯方块</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a1a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    color: #fff;
+    overflow: hidden;
+  }
+
+  .game-wrapper {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+  }
+
+  .side-panel {
+    width: 140px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .panel-box {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+  }
+
+  .panel-box h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: rgba(255,255,255,0.5);
+    margin-bottom: 10px;
+  }
+
+  .panel-box .value {
+    font-size: 24px;
+    font-weight: 700;
+    color: #fff;
+  }
+
+  .preview-canvas {
+    display: block;
+    margin: 0 auto;
+  }
+
+  .board-container {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 0 60px rgba(100, 100, 255, 0.15), 0 0 120px rgba(100, 100, 255, 0.05);
+  }
+
+  .board-container::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 2px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  #gameCanvas {
+    display: block;
+    background: #0f0f2a;
+  }
+
+  .overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 20;
+    backdrop-filter: blur(4px);
+  }
+
+  .overlay.hidden { display: none; }
+
+  .overlay h1 {
+    font-size: 36px;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .overlay h2 {
+    font-size: 28px;
+    margin-bottom: 16px;
+    color: #f55;
+  }
+
+  .overlay p {
+    font-size: 14px;
+    color: rgba(255,255,255,0.6);
+    margin-bottom: 20px;
+  }
+
+  .btn {
+    padding: 12px 36px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+
+  .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+  }
+
+  .controls-info {
+    margin-top: 16px;
+    font-size: 12px;
+    color: rgba(255,255,255,0.35);
+    line-height: 1.8;
+  }
+
+  .controls-info kbd {
+    background: rgba(255,255,255,0.1);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    color: rgba(255,255,255,0.6);
+  }
+
+  .line-clear-effect {
+    position: absolute;
+    left: 0;
+    height: 0;
+    background: rgba(255, 255, 255, 0.8);
+    pointer-events: none;
+    z-index: 15;
+    animation: lineFlash 0.3s ease-out forwards;
+  }
+
+  @keyframes lineFlash {
+    0% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* ─── AI Agent Styles ─── */
+  .ai-heatmap-canvas {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+  }
+
+  .ai-mode-bar {
+    display: flex;
+    gap: 6px;
+    margin-top: 12px;
+  }
+
+  .ai-mode-btn {
+    flex: 1;
+    padding: 6px 3px;
+    font-size: 10px;
+    font-weight: 600;
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 6px;
+    cursor: pointer;
+    background: rgba(255,255,255,0.05);
+    color: rgba(255,255,255,0.5);
+    transition: all 0.15s;
+    letter-spacing: 0.5px;
+  }
+
+  .ai-mode-btn:hover {
+    background: rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.8);
+  }
+
+  .ai-mode-btn.active {
+    background: rgba(102,126,234,0.3);
+    border-color: rgba(102,126,234,0.5);
+    color: #fff;
+  }
+
+  .ai-decision-panel {
+    display: none;
+    margin-top: 12px;
+  }
+
+  .ai-decision-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 3px 0;
+    font-size: 11px;
+    color: rgba(255,255,255,0.7);
+  }
+
+  .ai-decision-row .ai-val {
+    color: #fff;
+    font-weight: 600;
+    font-size: 12px;
+  }
+
+  .ai-top-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 2px 0;
+    font-size: 10px;
+    color: rgba(255,255,255,0.6);
+    font-family: monospace;
+  }
+
+  .ai-top-item .ai-rank {
+    color: rgba(255,255,255,0.3);
+    width: 18px;
+  }
+
+  .ai-top-item .ai-q {
+    color: rgba(255,255,255,0.5);
+    font-size: 9px;
+  }
+
+  .ai-metric {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: rgba(255,255,255,0.5);
+    padding: 1px 0;
+  }
+
+  .ai-metric .ai-mval {
+    color: rgba(255,255,255,0.8);
+    font-family: monospace;
+  }
+
+  .ai-speed-slider {
+    width: 100%;
+    margin: 8px 0 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.15);
+    outline: none;
+  }
+
+  .ai-speed-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #667eea;
+    cursor: pointer;
+  }
+
+  .ai-speed-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 8px;
+    color: rgba(255,255,255,0.35);
+    margin-top: 2px;
+  }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.1/dist/ort.all.min.js"></script>
+</head>
+<body>
+
+<div class="game-wrapper">
+  <!-- Left Panel -->
+  <div class="side-panel">
+    <div class="panel-box">
+      <h3>保持</h3>
+      <canvas id="holdCanvas" class="preview-canvas" width="100" height="80"></canvas>
+    </div>
+    <div class="panel-box">
+      <h3>分数</h3>
+      <div class="value" id="score">0</div>
+    </div>
+    <div class="panel-box">
+      <h3>等级</h3>
+      <div class="value" id="level">1</div>
+    </div>
+    <div class="panel-box">
+      <h3>行数</h3>
+      <div class="value" id="lines">0</div>
+    </div>
+    <div class="panel-box">
+      <h3>时间</h3>
+      <div class="value" id="gameTime" style="font-size:20px;">00:00</div>
+    </div>
+    <div class="panel-box">
+      <h3>方块数</h3>
+      <div class="value" id="pieceCount" style="font-size:20px;">0</div>
+    </div>
+    <div class="panel-box">
+      <h3>速度</h3>
+      <div class="value" id="piecesPerSec" style="font-size:18px;">-</div>
+    </div>
+  </div>
+
+  <!-- Game Board -->
+  <div class="board-container">
+    <canvas id="gameCanvas" width="300" height="600"></canvas>
+    <canvas id="aiHeatmapCanvas" class="ai-heatmap-canvas" width="300" height="600"></canvas>
+    <div class="overlay" id="startOverlay">
+      <h1>俄罗斯方块</h1>
+      <p>经典益智游戏</p>
+      <button class="btn" id="startBtn">开始游戏</button>
+      <div class="controls-info">
+        <kbd>←</kbd> <kbd>→</kbd> 移动 &nbsp; <kbd>↑</kbd> 旋转<br>
+        <kbd>↓</kbd> 加速 &nbsp; <kbd>空格</kbd> 硬降<br>
+        <kbd>C</kbd> 保持 &nbsp; <kbd>P</kbd> 暂停
+      </div>
+    </div>
+    <div class="overlay hidden" id="pauseOverlay">
+      <h1>暂停</h1>
+      <button class="btn" id="resumeBtn">继续游戏</button>
+    </div>
+    <div class="overlay hidden" id="gameOverOverlay">
+      <h2>游戏结束</h2>
+      <p>最终分数: <span id="finalScore">0</span></p>
+      <p>用时: <span id="finalTime">-</span> &nbsp; 方块: <span id="finalPieces">0</span></p>
+      <p>速度: <span id="finalPPS">-</span> &nbsp; 等级: <span id="finalLevel">1</span></p>
+      <button class="btn" id="restartBtn">重新开始</button>
+    </div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="side-panel">
+    <div class="panel-box">
+      <h3>下一个</h3>
+      <canvas id="nextCanvas" class="preview-canvas" width="100" height="240"></canvas>
+    </div>
+    <div class="controls-info" style="margin-top:0;">
+      <h3 style="color:rgba(255,255,255,0.5);font-size:12px;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">操作</h3>
+      <kbd>←</kbd> <kbd>→</kbd> 移动<br>
+      <kbd>↑</kbd> / <kbd>X</kbd> 旋转<br>
+      <kbd>Z</kbd> 反转旋转<br>
+      <kbd>↓</kbd> 软降<br>
+      <kbd>空格</kbd> 硬降<br>
+      <kbd>C</kbd> / <kbd>Shift</kbd> 保持<br>
+      <kbd>P</kbd> / <kbd>Esc</kbd> 暂停
+    </div>
+    <div class="panel-box" style="margin-top:12px;">
+      <h3>AI 智能体</h3>
+      <div class="ai-status" id="aiStatus">No model loaded</div>
+      <button class="ai-mode-btn" style="width:100%;margin:6px 0;padding:5px;font-size:10px;" onclick="probeBrowserEnv()">环境检测</button>
+      <div id="browserProbeResult" style="display:none;font-size:9px;color:rgba(255,255,255,0.55);line-height:1.6;text-align:left;"></div>
+      <div class="ai-mode-bar">
+        <button class="ai-mode-btn active" data-mode="off" onclick="setAIMode('off')">手动</button>
+        <button class="ai-mode-btn" data-mode="auto" onclick="setAIMode('auto')">AI 自动</button>
+        <button class="ai-mode-btn" data-mode="suggest" onclick="setAIMode('suggest')">AI 建议</button>
+      </div>
+      <input type="file" class="ai-model-input" id="aiModelFile" accept=".onnx" title="Load ONNX model">
+      <div style="margin-top:6px;">
+        <span style="font-size:9px;color:rgba(255,255,255,0.4);">速度</span>
+        <input type="range" class="ai-speed-slider" id="aiSpeedSlider" min="1" max="4" value="3" oninput="aiSpeed=parseInt(this.value)">
+        <div class="ai-speed-labels">
+          <span>慢</span><span>中</span><span>快</span><span>即时</span>
+        </div>
+      </div>
+      <div class="ai-decision-panel" id="aiDecisionPanel">
+        <div class="ai-decision-row"><span>旋转</span><span class="ai-val" id="aiDecisionRot">-</span></div>
+        <div class="ai-decision-row"><span>列</span><span class="ai-val" id="aiDecisionCol">-</span></div>
+        <div class="ai-decision-row"><span>Hold</span><span class="ai-val" id="aiDecisionHold">-</span></div>
+        <div class="ai-decision-row"><span>Q 值</span><span class="ai-val" id="aiDecisionQ">-</span></div>
+        <div style="margin-top:6px;border-top:1px solid rgba(255,255,255,0.08);padding-top:4px;">
+          <span style="font-size:9px;color:rgba(255,255,255,0.35);">Top-3 动作</span>
+          <div id="aiTop3"></div>
+        </div>
+        <div style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.08);padding-top:4px;">
+          <div class="ai-metric"><span>推理延迟</span><span class="ai-mval" id="aiInferenceTime">-</span></div>
+          <div class="ai-metric"><span>置信度</span><span class="ai-mval" id="aiConfidence">-</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== CONSTANTS ====================
+const COLS = 10;
+const ROWS = 20;
+const BLOCK = 30;
+const HIDDEN_ROWS = 2;
+const TOTAL_ROWS = ROWS + HIDDEN_ROWS;
+
+const COLORS = {
+  I: '#00f0f0',
+  O: '#f0f000',
+  T: '#a000f0',
+  S: '#00f000',
+  Z: '#f00000',
+  J: '#0000f0',
+  L: '#f0a000'
+};
+
+const GLOW_COLORS = {
+  I: 'rgba(0, 240, 240, 0.4)',
+  O: 'rgba(240, 240, 0, 0.4)',
+  T: 'rgba(160, 0, 240, 0.4)',
+  S: 'rgba(0, 240, 0, 0.4)',
+  Z: 'rgba(240, 0, 0, 0.4)',
+  J: 'rgba(0, 0, 240, 0.4)',
+  L: 'rgba(240, 160, 0, 0.4)'
+};
+
+// Tetromino shapes - each rotation state
+const SHAPES = {
+  I: [
+    [[0,0],[1,0],[2,0],[3,0]],
+    [[0,0],[0,1],[0,2],[0,3]],
+    [[0,0],[1,0],[2,0],[3,0]],
+    [[0,0],[0,1],[0,2],[0,3]]
+  ],
+  O: [
+    [[0,0],[1,0],[0,1],[1,1]],
+    [[0,0],[1,0],[0,1],[1,1]],
+    [[0,0],[1,0],[0,1],[1,1]],
+    [[0,0],[1,0],[0,1],[1,1]]
+  ],
+  T: [
+    [[0,0],[1,0],[2,0],[1,1]],
+    [[0,0],[0,1],[0,2],[1,1]],
+    [[1,0],[0,1],[1,1],[2,1]],
+    [[1,0],[1,1],[1,2],[0,1]]
+  ],
+  S: [
+    [[1,0],[2,0],[0,1],[1,1]],
+    [[0,0],[0,1],[1,1],[1,2]],
+    [[1,0],[2,0],[0,1],[1,1]],
+    [[0,0],[0,1],[1,1],[1,2]]
+  ],
+  Z: [
+    [[0,0],[1,0],[1,1],[2,1]],
+    [[1,0],[0,1],[1,1],[0,2]],
+    [[0,0],[1,0],[1,1],[2,1]],
+    [[1,0],[0,1],[1,1],[0,2]]
+  ],
+  J: [
+    [[0,0],[0,1],[1,1],[2,1]],
+    [[0,0],[1,0],[0,1],[0,2]],
+    [[0,0],[1,0],[2,0],[2,1]],
+    [[1,0],[1,1],[0,2],[1,2]]
+  ],
+  L: [
+    [[2,0],[0,1],[1,1],[2,1]],
+    [[0,0],[0,1],[0,2],[1,2]],
+    [[0,0],[1,0],[2,0],[0,1]],
+    [[0,0],[1,0],[1,1],[1,2]]
+  ]
+};
+
+// Wall kick data (SRS)
+const WALL_KICKS = {
+  normal: {
+    '0>1': [[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],
+    '1>0': [[0,0],[1,0],[1,-1],[0,2],[1,2]],
+    '1>2': [[0,0],[1,0],[1,-1],[0,2],[1,2]],
+    '2>1': [[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],
+    '2>3': [[0,0],[1,0],[1,1],[0,-2],[1,-2]],
+    '3>2': [[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],
+    '3>0': [[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],
+    '0>3': [[0,0],[1,0],[1,1],[0,-2],[1,-2]]
+  },
+  I: {
+    '0>1': [[0,0],[-2,0],[1,0],[-2,-1],[1,2]],
+    '1>0': [[0,0],[2,0],[-1,0],[2,1],[-1,-2]],
+    '1>2': [[0,0],[-1,0],[2,0],[-1,2],[2,-1]],
+    '2>1': [[0,0],[1,0],[-2,0],[1,-2],[-2,1]],
+    '2>3': [[0,0],[2,0],[-1,0],[2,1],[-1,-2]],
+    '3>2': [[0,0],[-2,0],[1,0],[-2,-1],[1,2]],
+    '3>0': [[0,0],[1,0],[-2,0],[1,-2],[-2,1]],
+    '0>3': [[0,0],[-1,0],[2,0],[-1,2],[2,-1]]
+  }
+};
+
+const PIECE_NAMES = ['I','O','T','S','Z','J','L'];
+
+// Scoring
+const SCORE_TABLE = {
+  0: 0,
+  1: 100,
+  2: 300,
+  3: 500,
+  4: 800
+};
+
+// ==================== GAME STATE ====================
+let board = [];
+let currentPiece = null;
+let holdPiece = null;
+let canHold = true;
+let nextPieces = [];
+let score = 0;
+let level = 1;
+let lines = 0;
+let gameState = 'idle'; // idle, playing, paused, gameover
+let dropTimer = 0;
+let lastTime = 0;
+let lockDelay = 0;
+let lockDelayMax = 500;
+let lockMoves = 0;
+let lockMovesMax = 15;
+let isLocking = false;
+let animationId = null;
+let bag = [];
+let gameStartTime = 0;
+let pieceCount = 0;
+
+// ==================== CANVAS SETUP ====================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const holdCanvas = document.getElementById('holdCanvas');
+const holdCtx = holdCanvas.getContext('2d');
+const nextCanvas = document.getElementById('nextCanvas');
+const nextCtx = nextCanvas.getContext('2d');
+
+// ==================== DOM ELEMENTS ====================
+const scoreEl = document.getElementById('score');
+const levelEl = document.getElementById('level');
+const linesEl = document.getElementById('lines');
+const finalScoreEl = document.getElementById('finalScore');
+const finalTimeEl = document.getElementById('finalTime');
+const finalPiecesEl = document.getElementById('finalPieces');
+const finalPPSel = document.getElementById('finalPPS');
+const finalLevelEl = document.getElementById('finalLevel');
+const gameTimeEl = document.getElementById('gameTime');
+const pieceCountEl = document.getElementById('pieceCount');
+const piecesPerSecEl = document.getElementById('piecesPerSec');
+const startOverlay = document.getElementById('startOverlay');
+const pauseOverlay = document.getElementById('pauseOverlay');
+const gameOverOverlay = document.getElementById('gameOverOverlay');
+
+// ==================== BAG RANDOMIZER ====================
+function fillBag() {
+  bag = [...PIECE_NAMES];
+  // Fisher-Yates shuffle
+  for (let i = bag.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [bag[i], bag[j]] = [bag[j], bag[i]];
+  }
+}
+
+function getNextPieceName() {
+  if (bag.length === 0) fillBag();
+  return bag.pop();
+}
+
+function fillNextPieces() {
+  while (nextPieces.length < 4) {
+    nextPieces.push(getNextPieceName());
+  }
+}
+
+// ==================== PIECE ====================
+function createPiece(name) {
+  return {
+    name: name,
+    rotation: 0,
+    x: 3,
+    y: HIDDEN_ROWS - 2
+  };
+}
+
+function getBlocks(piece) {
+  return SHAPES[piece.name][piece.rotation].map(([bx, by]) => [piece.x + bx, piece.y + by]);
+}
+
+function getBlocksForPreview(name) {
+  return SHAPES[name][0];
+}
+
+// ==================== COLLISION ====================
+function isValid(blocks) {
+  return blocks.every(([x, y]) => {
+    if (x < 0 || x >= COLS) return false;
+    if (y >= TOTAL_ROWS) return false;
+    if (y < 0) return true; // above board is ok
+    return board[y][x] === null;
+  });
+}
+
+function getValidBlocks(piece) {
+  return getBlocks(piece).filter(([x, y]) => y >= 0);
+}
+
+// ==================== BOARD ====================
+function initBoard() {
+  board = [];
+  for (let y = 0; y < TOTAL_ROWS; y++) {
+    board[y] = new Array(COLS).fill(null);
+  }
+}
+
+// ==================== MOVEMENT ====================
+function movePiece(dx, dy) {
+  const newPiece = { ...currentPiece, x: currentPiece.x + dx, y: currentPiece.y + dy };
+  if (isValid(getBlocks(newPiece))) {
+    currentPiece = newPiece;
+    if (isLocking && dy === 0) {
+      lockMoves++;
+      lockDelay = 0;
+    }
+    return true;
+  }
+  return false;
+}
+
+function rotatePiece(dir) {
+  // dir: 1 = clockwise, -1 = counter-clockwise
+  const newRotation = (currentPiece.rotation + dir + 4) % 4;
+  const kickKey = `${currentPiece.rotation}>${newRotation}`;
+  const kickTable = currentPiece.name === 'I' ? WALL_KICKS.I : WALL_KICKS.normal;
+  const kicks = kickTable[kickKey] || [[0,0]];
+
+  for (const [kx, ky] of kicks) {
+    const newPiece = {
+      ...currentPiece,
+      rotation: newRotation,
+      x: currentPiece.x + kx,
+      y: currentPiece.y - ky
+    };
+    if (isValid(getBlocks(newPiece))) {
+      currentPiece = newPiece;
+      if (isLocking) {
+        lockMoves++;
+        lockDelay = 0;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+function hardDrop() {
+  let dropped = 0;
+  while (movePiece(0, 1)) {
+    dropped++;
+  }
+  score += dropped * 2;
+  lockPiece();
+}
+
+function getGhostY() {
+  let ghostY = currentPiece.y;
+  while (true) {
+    const testPiece = { ...currentPiece, y: ghostY + 1 };
+    if (!isValid(getBlocks(testPiece))) break;
+    ghostY++;
+  }
+  return ghostY;
+}
+
+// ==================== LOCK & CLEAR ====================
+function lockPiece() {
+  const blocks = getBlocks(currentPiece);
+  blocks.forEach(([x, y]) => {
+    if (y >= 0 && y < TOTAL_ROWS) {
+      board[y][x] = currentPiece.name;
+    }
+  });
+
+  // Track piece placement.
+  pieceCount++;
+
+  // Check game over
+  if (blocks.some(([, y]) => y < 2)) {
+    gameOver();
+    return;
+  }
+
+  clearLines();
+  spawnPiece();
+}
+
+function clearLines() {
+  let cleared = 0;
+  for (let y = TOTAL_ROWS - 1; y >= 0; y--) {
+    if (board[y].every(cell => cell !== null)) {
+      board.splice(y, 1);
+      board.unshift(new Array(COLS).fill(null));
+      cleared++;
+      y++; // recheck this row
+    }
+  }
+
+  if (cleared > 0) {
+    lines += cleared;
+    score += SCORE_TABLE[cleared] * level;
+    level = Math.floor(lines / 10) + 1;
+    updateUI();
+  }
+}
+
+function spawnPiece() {
+  fillNextPieces();
+  const name = nextPieces.shift();
+  fillNextPieces();
+  currentPiece = createPiece(name);
+  canHold = true;
+  isLocking = false;
+  lockDelay = 0;
+  lockMoves = 0;
+
+  // Check if spawn position is valid
+  if (!isValid(getBlocks(currentPiece))) {
+    gameOver();
+    return;
+  }
+
+  // Trigger AI decision if in auto or suggest mode.
+  if (gameState === 'playing' && (aiMode === AI.AUTO || aiMode === AI.SUGGEST)) {
+    aiNeedsDecision = true;
+    if (aiLastQValues) {
+      // Refresh heatmap for new piece.
+      const legal = getAILegalActions();
+      aiLastLegalActions = legal;
+      drawAIHeatmap(aiLastQValues, legal);
+    }
+  }
+}
+
+function holdCurrentPiece() {
+  if (!canHold) return;
+  canHold = false;
+  const name = currentPiece.name;
+  if (holdPiece) {
+    currentPiece = createPiece(holdPiece);
+    holdPiece = name;
+  } else {
+    holdPiece = name;
+    spawnPiece();
+  }
+  isLocking = false;
+  lockDelay = 0;
+  lockMoves = 0;
+}
+
+// ==================== GAME SPEED ====================
+function getDropInterval() {
+  // Speed curve: starts at 1000ms, decreases with level
+  const speeds = [1000, 800, 650, 500, 400, 320, 250, 180, 130, 90, 70, 55, 45, 35, 28, 22, 17, 14, 11, 9];
+  return speeds[Math.min(level - 1, speeds.length - 1)];
+}
+
+// ==================== RENDERING ====================
+function drawBlock(context, x, y, color, glowColor, size = BLOCK, ghost = false) {
+  const padding = 1;
+
+  if (ghost) {
+    context.fillStyle = 'rgba(255,255,255,0.1)';
+    context.fillRect(x * size + padding, y * size + padding, size - padding * 2, size - padding * 2);
+    context.strokeStyle = 'rgba(255,255,255,0.3)';
+    context.lineWidth = 1;
+    context.strokeRect(x * size + padding + 0.5, y * size + padding + 0.5, size - padding * 2 - 1, size - padding * 2 - 1);
+    return;
+  }
+
+  // Main fill
+  context.fillStyle = color;
+  context.fillRect(x * size + padding, y * size + padding, size - padding * 2, size - padding * 2);
+
+  // Top-left highlight
+  context.fillStyle = 'rgba(255,255,255,0.25)';
+  context.fillRect(x * size + padding, y * size + padding, size - padding * 2, 3);
+  context.fillRect(x * size + padding, y * size + padding, 3, size - padding * 2);
+
+  // Bottom-right shadow
+  context.fillStyle = 'rgba(0,0,0,0.25)';
+  context.fillRect(x * size + padding, (y + 1) * size - padding - 3, size - padding * 2, 3);
+  context.fillRect((x + 1) * size - padding - 3, y * size + padding, 3, size - padding * 2);
+
+  // Inner glow
+  context.fillStyle = 'rgba(255,255,255,0.08)';
+  context.fillRect(x * size + 4, y * size + 4, size - 8, size - 8);
+}
+
+function drawBoard() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= COLS; x++) {
+    ctx.beginPath();
+    ctx.moveTo(x * BLOCK, 0);
+    ctx.lineTo(x * BLOCK, canvas.height);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= ROWS; y++) {
+    ctx.beginPath();
+    ctx.moveTo(0, y * BLOCK);
+    ctx.lineTo(canvas.width, y * BLOCK);
+    ctx.stroke();
+  }
+
+  // Placed blocks
+  for (let y = HIDDEN_ROWS; y < TOTAL_ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (board[y][x]) {
+        const drawY = y - HIDDEN_ROWS;
+        drawBlock(ctx, x, drawY, COLORS[board[y][x]], GLOW_COLORS[board[y][x]]);
+      }
+    }
+  }
+
+  if (currentPiece && gameState === 'playing') {
+    // Ghost piece
+    const ghostY = getGhostY();
+    if (ghostY !== currentPiece.y) {
+      const ghostBlocks = getBlocks({ ...currentPiece, y: ghostY });
+      ghostBlocks.forEach(([x, y]) => {
+        if (y >= HIDDEN_ROWS) {
+          drawBlock(ctx, x, y - HIDDEN_ROWS, COLORS[currentPiece.name], GLOW_COLORS[currentPiece.name], BLOCK, true);
+        }
+      });
+    }
+
+    // Current piece
+    const blocks = getBlocks(currentPiece);
+    blocks.forEach(([x, y]) => {
+      if (y >= HIDDEN_ROWS) {
+        drawBlock(ctx, x, y - HIDDEN_ROWS, COLORS[currentPiece.name], GLOW_COLORS[currentPiece.name]);
+      }
+    });
+  }
+}
+
+function drawPreview(context, canvasEl, name, offsetY = 0, blockSize = 20) {
+  if (!name) return;
+  const blocks = getBlocksForPreview(name);
+  const minX = Math.min(...blocks.map(b => b[0]));
+  const maxX = Math.max(...blocks.map(b => b[0]));
+  const minY = Math.min(...blocks.map(b => b[1]));
+  const maxY = Math.max(...blocks.map(b => b[1]));
+  const w = (maxX - minX + 1) * blockSize;
+  const h = (maxY - minY + 1) * blockSize;
+  const offsetX = (canvasEl.width - w) / 2;
+  const offsetYAdj = offsetY + (80 - h) / 2;
+
+  blocks.forEach(([bx, by]) => {
+    const px = offsetX / blockSize + (bx - minX);
+    const py = offsetYAdj / blockSize + (by - minY);
+    // We'll draw manually since drawBlock uses grid coords
+    const padding = 1;
+    context.fillStyle = COLORS[name];
+    context.fillRect(offsetX + (bx - minX) * blockSize + padding, offsetYAdj + (by - minY) * blockSize + padding, blockSize - padding * 2, blockSize - padding * 2);
+    context.fillStyle = 'rgba(255,255,255,0.2)';
+    context.fillRect(offsetX + (bx - minX) * blockSize + padding, offsetYAdj + (by - minY) * blockSize + padding, blockSize - padding * 2, 2);
+    context.fillRect(offsetX + (bx - minX) * blockSize + padding, offsetYAdj + (by - minY) * blockSize + padding, 2, blockSize - padding * 2);
+    context.fillStyle = 'rgba(0,0,0,0.2)';
+    context.fillRect(offsetX + (bx - minX) * blockSize + padding, offsetYAdj + (by - minY + 1) * blockSize - padding - 2, blockSize - padding * 2, 2);
+    context.fillRect(offsetX + (bx - minX + 1) * blockSize - padding - 2, offsetYAdj + (by - minY) * blockSize + padding, 2, blockSize - padding * 2);
+  });
+}
+
+function drawPreviews() {
+  // Hold
+  holdCtx.clearRect(0, 0, holdCanvas.width, holdCanvas.height);
+  if (holdPiece) {
+    drawPreview(holdCtx, holdCanvas, holdPiece, 0, 20);
+  }
+
+  // Next
+  nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+  for (let i = 0; i < Math.min(nextPieces.length, 4); i++) {
+    drawPreview(nextCtx, nextCanvas, nextPieces[i], i * 60, 20);
+  }
+}
+
+function updateUI() {
+  scoreEl.textContent = score.toLocaleString();
+  levelEl.textContent = level;
+  linesEl.textContent = lines;
+
+  // Elapsed time.
+  if (gameState === 'playing' && gameStartTime > 0) {
+    const elapsed = (Date.now() - gameStartTime) / 1000;
+    gameTimeEl.textContent = _fmtTime(elapsed);
+    pieceCountEl.textContent = pieceCount;
+
+    // Pieces per second.
+    if (elapsed >= 1) {
+      const pps = pieceCount / elapsed;
+      piecesPerSecEl.textContent = pps.toFixed(2);
+    } else {
+      piecesPerSecEl.textContent = '-';
+    }
+  }
+}
+
+function _fmtTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+// ==================== DAS (Delayed Auto Shift) ====================
+const DAS_DELAY = 170;
+const DAS_RATE = 50;
+let dasState = { left: false, right: false, down: false };
+let dasTimers = { left: 0, right: 0, down: 0 };
+let dasActive = { left: false, right: false, down: false };
+
+// ==================== INPUT ====================
+const keys = {};
+
+document.addEventListener('keydown', (e) => {
+  if (keys[e.code]) return;
+  keys[e.code] = true;
+
+  // Always allow pause/resume regardless of AI mode.
+  if (e.code === 'KeyP' || e.code === 'Escape') {
+    e.preventDefault();
+    if (gameState === 'playing') pauseGame();
+    else if (gameState === 'paused') resumeGame();
+    return;
+  }
+
+  // Block gameplay keys in AI auto mode.
+  if (aiMode === AI.AUTO) return;
+
+  if (gameState === 'playing') {
+    switch (e.code) {
+      case 'ArrowLeft':
+        e.preventDefault();
+        movePiece(-1, 0);
+        dasState.left = true;
+        dasTimers.left = 0;
+        dasActive.left = false;
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        movePiece(1, 0);
+        dasState.right = true;
+        dasTimers.right = 0;
+        dasActive.right = false;
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        if (movePiece(0, 1)) {
+          score += 1;
+          updateUI();
+        }
+        dasState.down = true;
+        dasTimers.down = 0;
+        dasActive.down = false;
+        break;
+      case 'ArrowUp':
+      case 'KeyX':
+        e.preventDefault();
+        rotatePiece(1);
+        break;
+      case 'KeyZ':
+        e.preventDefault();
+        rotatePiece(-1);
+        break;
+      case 'Space':
+        e.preventDefault();
+        hardDrop();
+        break;
+      case 'KeyC':
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        e.preventDefault();
+        holdCurrentPiece();
+        break;
+    }
+  } else if (gameState === 'paused') {
+    if (e.code === 'KeyP' || e.code === 'Escape') {
+      e.preventDefault();
+      resumeGame();
+    }
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  keys[e.code] = false;
+  switch (e.code) {
+    case 'ArrowLeft': dasState.left = false; break;
+    case 'ArrowRight': dasState.right = false; break;
+    case 'ArrowDown': dasState.down = false; break;
+  }
+});
+
+// ==================== GAME LOOP ====================
+function gameLoop(timestamp) {
+  if (gameState !== 'playing') return;
+
+  const delta = timestamp - lastTime;
+  lastTime = timestamp;
+
+  // --- AI Plan Execution ---
+  if (aiMode === AI.AUTO && aiPlan.length > 0) {
+    aiPlanTimer += delta;
+    const interval = aiSpeedIntervals[aiSpeed - 1] || 30;
+
+    if (aiPlanTimer >= interval) {
+      aiPlanTimer = 0;
+      const done = executePlanStep();
+      if (done) {
+        // Plan complete. piece was hard-dropped → spawnPiece() already called.
+        aiPlan = [];
+      }
+    }
+    // Skip normal physics while executing plan.
+    drawBoard();
+    drawPreviews();
+    updateUI();
+    if (aiLastQValues && aiMode === AI.AUTO) {
+      drawAIHeatmap(aiLastQValues, aiLastLegalActions);
+    }
+    animationId = requestAnimationFrame(gameLoop);
+    return;
+  }
+
+  // --- AI Decision Trigger ---
+  if (aiMode === AI.AUTO && aiNeedsDecision && aiPlan.length === 0 && currentPiece && !aiPendingAsync) {
+    aiDecide();
+  }
+  // For SUGGEST mode: refresh suggestion asynchronously.
+  if (aiMode === AI.SUGGEST && aiNeedsDecision && !aiPendingAsync) {
+    aiDecide();
+  }
+
+  // --- Normal physics (skip DAS in AI auto mode) ---
+  if (aiMode !== AI.AUTO) {
+    // DAS handling
+    if (dasState.left) {
+      dasTimers.left += delta;
+      if (dasTimers.left >= DAS_DELAY && !dasActive.left) {
+        dasActive.left = true;
+        dasTimers.left = DAS_RATE;
+      }
+      if (dasActive.left) {
+        dasTimers.left -= delta;
+        if (dasTimers.left <= 0) {
+          movePiece(-1, 0);
+          dasTimers.left = DAS_RATE;
+        }
+      }
+    }
+
+    if (dasState.right) {
+      dasTimers.right += delta;
+      if (dasTimers.right >= DAS_DELAY && !dasActive.right) {
+        dasActive.right = true;
+        dasTimers.right = DAS_RATE;
+      }
+      if (dasActive.right) {
+        dasTimers.right -= delta;
+        if (dasTimers.right <= 0) {
+          movePiece(1, 0);
+          dasTimers.right = DAS_RATE;
+        }
+      }
+    }
+
+    if (dasState.down) {
+      dasTimers.down += delta;
+      if (dasTimers.down >= DAS_DELAY && !dasActive.down) {
+        dasActive.down = true;
+        dasTimers.down = DAS_RATE;
+      }
+      if (dasActive.down) {
+        dasTimers.down -= delta;
+        if (dasTimers.down <= 0) {
+          if (movePiece(0, 1)) {
+            score += 1;
+            updateUI();
+          }
+          dasTimers.down = DAS_RATE;
+        }
+      }
+    }
+
+    // Gravity
+    dropTimer += delta;
+    const interval = getDropInterval();
+    if (dropTimer >= interval) {
+      dropTimer = 0;
+      if (!movePiece(0, 1)) {
+        if (!isLocking) {
+          isLocking = true;
+          lockDelay = 0;
+        }
+      } else {
+        isLocking = false;
+        lockDelay = 0;
+      }
+    }
+
+    // Lock delay
+    if (isLocking) {
+      lockDelay += delta;
+      if (lockDelay >= lockDelayMax || lockMoves >= lockMovesMax) {
+        lockPiece();
+        dropTimer = 0;
+      }
+    }
+
+    // Check if piece can't lock (still floating but can't go down)
+    if (currentPiece && isLocking) {
+      const testPiece = { ...currentPiece, y: currentPiece.y + 1 };
+      if (isValid(getBlocks(testPiece))) {
+        isLocking = false;
+        lockDelay = 0;
+      }
+    }
+  }
+
+  drawBoard();
+  drawPreviews();
+  updateUI();
+
+  // Draw AI overlay.
+  if (aiMode !== AI.OFF && aiLastQValues) {
+    drawAIHeatmap(aiLastQValues, aiLastLegalActions);
+  }
+
+  animationId = requestAnimationFrame(gameLoop);
+}
+
+// ==================== GAME CONTROL ====================
+function startGame() {
+  initBoard();
+  score = 0;
+  level = 1;
+  lines = 0;
+  pieceCount = 0;
+  gameStartTime = performance.now();
+  holdPiece = null;
+  canHold = true;
+  nextPieces = [];
+  bag = [];
+  dropTimer = 0;
+  isLocking = false;
+  lockDelay = 0;
+  lockMoves = 0;
+
+  fillBag();
+  fillNextPieces();
+  spawnPiece();
+  updateUI();
+  gameTimeEl.textContent = '00:00';
+  pieceCountEl.textContent = '0';
+  piecesPerSecEl.textContent = '-';
+
+  gameState = 'playing';
+  startOverlay.classList.add('hidden');
+  pauseOverlay.classList.add('hidden');
+  gameOverOverlay.classList.add('hidden');
+
+  // Reset AI state.
+  aiPlan = [];
+  aiPlanTimer = 0;
+  aiNeedsDecision = false;
+  aiPendingAsync = false;
+  aiLastQValues = null;
+  aiLastLegalActions = [];
+  clearAIHeatmap();
+  if (aiMode === AI.AUTO && currentPiece) {
+    aiNeedsDecision = true;
+  }
+
+  lastTime = performance.now();
+  if (animationId) cancelAnimationFrame(animationId);
+  animationId = requestAnimationFrame(gameLoop);
+}
+
+function pauseGame() {
+  gameState = 'paused';
+  pauseOverlay.classList.remove('hidden');
+  if (animationId) cancelAnimationFrame(animationId);
+}
+
+function resumeGame() {
+  gameState = 'playing';
+  pauseOverlay.classList.add('hidden');
+  lastTime = performance.now();
+  animationId = requestAnimationFrame(gameLoop);
+}
+
+function gameOver() {
+  gameState = 'gameover';
+  finalScoreEl.textContent = score.toLocaleString();
+
+  // Final timing and piece stats.
+  if (gameStartTime > 0) {
+    const elapsed = (Date.now() - gameStartTime) / 1000;
+    finalTimeEl.textContent = _fmtTime(elapsed);
+    finalPiecesEl.textContent = pieceCount;
+    finalLevelEl.textContent = level;
+    if (elapsed >= 1) {
+      finalPPSel.textContent = (pieceCount / elapsed).toFixed(2) + ' pps';
+    } else {
+      finalPPSel.textContent = '-';
+    }
+  }
+
+  gameOverOverlay.classList.remove('hidden');
+  if (animationId) cancelAnimationFrame(animationId);
+}
+
+// ==================== EVENT LISTENERS ====================
+document.getElementById('startBtn').addEventListener('click', startGame);
+document.getElementById('resumeBtn').addEventListener('click', resumeGame);
+document.getElementById('restartBtn').addEventListener('click', startGame);
+
+// ==================== TOUCH CONTROLS ====================
+let touchStartX = 0;
+let touchStartY = 0;
+let touchStartTime = 0;
+let touchMoved = false;
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  touchStartX = touch.clientX;
+  touchStartY = touch.clientY;
+  touchStartTime = Date.now();
+  touchMoved = false;
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (gameState !== 'playing') return;
+  const touch = e.touches[0];
+  const dx = touch.clientX - touchStartX;
+  const dy = touch.clientY - touchStartY;
+
+  if (Math.abs(dx) > 30) {
+    movePiece(dx > 0 ? 1 : -1, 0);
+    touchStartX = touch.clientX;
+    touchMoved = true;
+  }
+  if (dy > 30) {
+    if (movePiece(0, 1)) {
+      score += 1;
+      updateUI();
+    }
+    touchStartY = touch.clientY;
+    touchMoved = true;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  if (gameState !== 'playing') return;
+  const elapsed = Date.now() - touchStartTime;
+
+  if (!touchMoved && elapsed < 200) {
+    // Tap = rotate
+    rotatePiece(1);
+  } else if (!touchMoved && elapsed >= 200) {
+    // Long press = hold
+    holdCurrentPiece();
+  }
+}, { passive: false });
+
+// Double tap for hard drop
+let lastTap = 0;
+canvas.addEventListener('touchstart', (e) => {
+  const now = Date.now();
+  if (now - lastTap < 300 && !touchMoved) {
+    hardDrop();
+  }
+  lastTap = now;
+});
+
+// ==================== AI AGENT ====================
+const AI = { OFF: 'off', AUTO: 'auto', SUGGEST: 'suggest' };
+let aiMode = AI.OFF;
+let aiSession = null;
+let aiModelLoaded = false;
+let aiModelLoading = false;
+let aiPlan = [];
+let aiPlanTimer = 0;
+let aiSpeed = 3;
+const aiSpeedIntervals = [150, 80, 30, 0];
+let aiNeedsDecision = false;
+let aiLastQValues = null;
+let aiLastLegalActions = [];
+let aiInferenceTime = 0;
+let aiPendingAsync = false;
+
+// --- ONNX Model Loading ---
+async function loadAIModel(modelUrl) {
+  if (aiModelLoading) return;
+  aiModelLoading = true;
+  updateAIStatus();
+  try {
+    aiSession = await ort.InferenceSession.create(modelUrl);
+    aiModelLoaded = true;
+    console.log('[AI] Model loaded from: ' + modelUrl);
+  } catch (err) {
+    console.error('[AI] Failed to load model:', err);
+    aiModelLoaded = false;
+  }
+  aiModelLoading = false;
+  updateAIStatus();
+}
+
+// --- State Encoding (must match Python env/state_encoder.py exactly) ---
+function encodeBoardForAI() {
+  const data = new Float32Array(1 * 1 * TOTAL_ROWS * COLS);
+  for (let r = 0; r < TOTAL_ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      data[r * COLS + c] = board[r][c] ? 1.0 : 0.0;
+    }
+  }
+  return new ort.Tensor('float32', data, [1, 1, TOTAL_ROWS, COLS]);
+}
+
+function encodeFeaturesForAI() {
+  const dims = [1, 53];
+  const f = new Float32Array(53);
+
+  // Column heights.
+  const heights = new Array(COLS).fill(0);
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < TOTAL_ROWS; r++) {
+      if (board[r][c]) { heights[c] = TOTAL_ROWS - r; break; }
+    }
+  }
+
+  // feat[0] = sum of heights (aggregate height)
+  f[0] = heights.reduce((a, b) => a + b, 0);
+  // feat[1] = lines cleared placeholder
+  f[1] = 0.0;
+  // feat[2] = holes
+  let holes = 0;
+  for (let c = 0; c < COLS; c++) {
+    let found = false;
+    for (let r = 0; r < TOTAL_ROWS; r++) {
+      if (board[r][c]) { found = true; }
+      else if (found) { holes++; }
+    }
+  }
+  f[2] = holes;
+  // feat[3] = bumpiness
+  let bump = 0;
+  for (let c = 0; c < COLS - 1; c++) { bump += Math.abs(heights[c] - heights[c + 1]); }
+  f[3] = bump;
+  // feat[4] = max well depth
+  let maxWell = 0;
+  for (let c = 0; c < COLS; c++) {
+    const ld = c > 0 ? heights[c - 1] - heights[c] : 0;
+    const rd = c < COLS - 1 ? heights[c + 1] - heights[c] : 0;
+    maxWell = Math.max(maxWell, Math.max(0, Math.min(ld, rd)));
+  }
+  f[4] = maxWell;
+  // feat[5] = mean height change placeholder
+  f[5] = 0.0;
+
+  // feat[6:13] = current piece one-hot (7 dims)
+  if (currentPiece) {
+    const idx = PIECE_NAMES.indexOf(currentPiece.name);
+    if (idx >= 0) f[6 + idx] = 1.0;
+  }
+  // feat[13:17] = rotation one-hot (4 dims)
+  if (currentPiece) f[13 + currentPiece.rotation] = 1.0;
+  // feat[17:25] = hold piece one-hot (8 dims, index 7 = empty)
+  if (holdPiece !== null && holdPiece !== undefined) {
+    const idx = PIECE_NAMES.indexOf(holdPiece);
+    if (idx >= 0) f[17 + idx] = 1.0;
+    else f[24] = 1.0;
+  } else {
+    f[24] = 1.0;
+  }
+  // feat[25:53] = next queue one-hots (4 x 7 = 28 dims)
+  for (let i = 0; i < 4; i++) {
+    if (i < nextPieces.length) {
+      const idx = PIECE_NAMES.indexOf(nextPieces[i]);
+      if (idx >= 0) f[25 + i * 7 + idx] = 1.0;
+    }
+  }
+
+  return new ort.Tensor('float32', f, dims);
+}
+
+// --- Action Encoding (match agent/action_mask.py) ---
+const NUM_COL_BUCKETS = 14;  // columns -2..11
+const COL_OFFSET = 2;
+
+function decodeAction(idx) {
+  const hold = idx >= 56;
+  let i = hold ? idx - 56 : idx;
+  const rotation = Math.floor(i / NUM_COL_BUCKETS);
+  const col = (i % NUM_COL_BUCKETS) - COL_OFFSET;
+  return { rotation, col, hold };
+}
+
+function encodeAction(rotation, col, hold) {
+  let idx = rotation * NUM_COL_BUCKETS + (col + COL_OFFSET);
+  if (hold) idx += 56;
+  return idx;
+}
+
+// --- Collision helpers for AI (replicating env logic) ---
+function aiCollides(cells, col, row) {
+  for (let i = 0; i < cells.length; i++) {
+    const cx = cells[i][0], cy = cells[i][1];
+    const r = row + cy, c = col + cx;
+    if (c < 0 || c >= COLS || r >= TOTAL_ROWS) return true;
+    if (r >= 0 && board[r][c]) return true;
+  }
+  return false;
+}
+
+function aiGhostY(cells, col, startY) {
+  let y = startY;
+  while (!aiCollides(cells, col, y + 1)) y++;
+  return y;
+}
+
+function getAILegalActions() {
+  if (!currentPiece) return [];
+  const actions = [];
+  const name = currentPiece.name;
+
+  // Non-hold actions.
+  for (let rot = 0; rot < 4; rot++) {
+    const cells = SHAPES[name][rot];
+    for (let col = -2; col < COLS + 2; col++) {
+      if (aiCollides(cells, col, HIDDEN_ROWS - 2)) continue;
+      const gy = aiGhostY(cells, col, HIDDEN_ROWS - 2);
+      if (gy >= 0 && !aiCollides(cells, col, gy)) {
+        actions.push({ rotation: rot, col, hold: false });
+      }
+    }
+  }
+
+  // Hold actions.
+  if (canHold && holdPiece !== null && holdPiece !== undefined) {
+    const altName = holdPiece;
+    for (let rot = 0; rot < 4; rot++) {
+      const cells = SHAPES[altName][rot];
+      for (let col = -2; col < COLS + 2; col++) {
+        if (aiCollides(cells, col, HIDDEN_ROWS - 2)) continue;
+        const gy = aiGhostY(cells, col, HIDDEN_ROWS - 2);
+        if (gy >= 0 && !aiCollides(cells, col, gy)) {
+          actions.push({ rotation: rot, col, hold: true });
+        }
+      }
+    }
+  }
+
+  return actions;
+}
+
+// --- AI Inference & Decision ---
+async function aiDecide() {
+  if (!aiModelLoaded || !aiSession || !currentPiece || aiPendingAsync) return;
+  aiNeedsDecision = false;
+  aiPendingAsync = true;
+
+  const t0 = performance.now();
+  try {
+    const boardT = encodeBoardForAI();
+    const featT = encodeFeaturesForAI();
+    const output = await aiSession.run({ board: boardT, features: featT });
+    const qv = output.q_values.data;  // Float32Array [1, 112]
+    aiLastQValues = qv;
+    aiInferenceTime = performance.now() - t0;
+
+    const legal = getAILegalActions();
+    aiLastLegalActions = legal;
+    if (legal.length === 0) { aiPendingAsync = false; return; }
+
+    // Find best legal action.
+    let bestIdx = -1, bestQ = -Infinity;
+    const legalSet = new Set();
+    for (const a of legal) legalSet.add(encodeAction(a.rotation, a.col, a.hold));
+
+    for (let i = 0; i < 112; i++) {
+      if (legalSet.has(i) && qv[i] > bestQ) {
+        bestQ = qv[i]; bestIdx = i;
+      }
+    }
+    if (bestIdx < 0) { aiPendingAsync = false; return; }
+
+    const action = decodeAction(bestIdx);
+    aiPlan = buildPlan(action);
+    aiPlanTimer = 0;
+
+    updateAIPanel(action, bestQ, qv, legal);
+    drawAIHeatmap(qv, legal);
+  } catch (e) {
+    console.error('[AI] Inference error:', e);
+  }
+  aiPendingAsync = false;
+}
+
+// --- Path Planner ---
+function buildPlan(action) {
+  const steps = [];
+
+  // If hold requested and we still have a current piece to exchange.
+  if (action.hold && canHold && holdPiece !== null && holdPiece !== undefined) {
+    steps.push('hold');
+    // After hold, the held piece becomes current and we apply the placement to it.
+    // The target rotation/col applies after the hold swap.
+    steps.push({ type: 'place', rotation: action.rotation, col: action.col });
+  } else if (action.hold && canHold && (holdPiece === null || holdPiece === undefined)) {
+    // First hold: just hold (no previous piece to swap in).
+    steps.push('hold');
+  } else {
+    steps.push({ type: 'place', rotation: action.rotation, col: action.col });
+  }
+
+  return steps;
+}
+
+// Returns true when plan is fully executed.
+function executePlanStep() {
+  if (aiPlan.length === 0) return true;
+
+  const step = aiPlan[0];
+
+  if (step === 'hold') {
+    holdCurrentPiece();
+    aiPlan.shift();
+    return aiPlan.length === 0;
+  }
+
+  if (step.type === 'place') {
+    if (!currentPiece) { aiPlan = []; return true; }
+
+    const targetRot = step.rotation;
+    const targetCol = step.col;
+
+    // 1. Rotate to target.
+    if (currentPiece.rotation !== targetRot) {
+      // Determine shortest rotation direction.
+      let diff = (targetRot - currentPiece.rotation + 4) % 4;
+      if (diff === 3) diff = -1;
+      if (diff !== 0) {
+        rotatePiece(diff > 0 ? 1 : -1);
+        return false; // more steps needed
+      }
+    }
+
+    // 2. Move to target column.
+    if (currentPiece.x < targetCol) { movePiece(1, 0); return false; }
+    if (currentPiece.x > targetCol) { movePiece(-1, 0); return false; }
+
+    // 3. Hard drop.
+    hardDrop();
+    aiPlan = [];
+    return true;
+  }
+
+  aiPlan.shift();
+  return aiPlan.length === 0;
+}
+
+// --- AI Panel ---
+function updateAIPanel(action, bestQ, qv, legal) {
+  const panel = document.getElementById('aiDecisionPanel');
+  if (!panel || aiMode === AI.OFF) return;
+  panel.style.display = 'block';
+
+  document.getElementById('aiDecisionRot').textContent = action.rotation;
+  document.getElementById('aiDecisionCol').textContent = action.col;
+  document.getElementById('aiDecisionHold').textContent = action.hold ? '是' : '否';
+  document.getElementById('aiDecisionQ').textContent = bestQ.toFixed(4);
+
+  // Top-3 actions.
+  const scored = legal.map(a => ({
+    ...a, q: qv[encodeAction(a.rotation, a.col, a.hold)]
+  })).sort((a, b) => b.q - a.q);
+
+  const top3 = document.getElementById('aiTop3');
+  if (top3) {
+    top3.innerHTML = scored.slice(0, 3).map((a, i) =>
+      '<div class="ai-top-item">' +
+        '<span class="ai-rank">#' + (i + 1) + '</span>' +
+        'R' + a.rotation + ' C' + a.col + (a.hold ? ' H' : '') +
+        '<span class="ai-q">' + a.q.toFixed(4) + '</span>' +
+      '</div>'
+    ).join('');
+  }
+
+  document.getElementById('aiInferenceTime').textContent = aiInferenceTime.toFixed(1) + 'ms';
+  const conf = scored.length >= 2 ? (scored[0].q - scored[1].q).toFixed(4) : '-';
+  document.getElementById('aiConfidence').textContent = conf;
+}
+
+// --- Heatmap ---
+function drawAIHeatmap(qv, legal) {
+  if (aiMode === AI.OFF) return;
+  const hc = document.getElementById('aiHeatmapCanvas');
+  if (!hc) return;
+  const hctx = hc.getContext('2d');
+  hctx.clearRect(0, 0, hc.width, hc.height);
+
+  // Best Q per column.
+  const colQ = new Array(COLS).fill(-Infinity);
+  for (const a of legal) {
+    if (a.col >= 0 && a.col < COLS) {
+      const q = qv[encodeAction(a.rotation, a.col, a.hold)];
+      if (q > colQ[a.col]) colQ[a.col] = q;
+    }
+  }
+
+  const valid = colQ.filter(q => q > -Infinity);
+  if (valid.length === 0) return;
+  const minQ = Math.min(...valid);
+  const maxQ = Math.max(...valid);
+  const range = maxQ - minQ || 1;
+
+  for (let c = 0; c < COLS; c++) {
+    if (colQ[c] > -Infinity) {
+      const t = (colQ[c] - minQ) / range;
+      const alpha = 0.12 + 0.30 * t;
+      const isBest = Math.abs(colQ[c] - maxQ) < 0.001;
+      hctx.fillStyle = isBest
+        ? 'rgba(0, 255, 120, ' + (alpha + 0.18) + ')'
+        : 'rgba(100, 160, 255, ' + alpha + ')';
+      hctx.fillRect(c * BLOCK, 0, BLOCK, hc.height);
+
+      // Q label at bottom.
+      hctx.fillStyle = 'rgba(255,255,255,0.85)';
+      hctx.font = '10px monospace';
+      hctx.textAlign = 'center';
+      hctx.fillText(colQ[c].toFixed(2), c * BLOCK + BLOCK / 2, hc.height - 5);
+    }
+  }
+}
+
+function clearAIHeatmap() {
+  const hc = document.getElementById('aiHeatmapCanvas');
+  if (hc) hc.getContext('2d').clearRect(0, 0, hc.width, hc.height);
+}
+
+// --- AI Mode Control ---
+function setAIMode(mode) {
+  aiMode = mode;
+  aiPlan = [];
+  aiPlanTimer = 0;
+  aiNeedsDecision = false;
+  aiPendingAsync = false;
+  aiLastQValues = null;
+  aiLastLegalActions = [];
+
+  document.querySelectorAll('.ai-mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+
+  const hc = document.getElementById('aiHeatmapCanvas');
+  if (hc) {
+    if (mode === AI.OFF) {
+      hc.style.display = 'none';
+      clearAIHeatmap();
+    } else {
+      hc.style.display = 'block';
+    }
+  }
+
+  const panel = document.getElementById('aiDecisionPanel');
+  if (panel) panel.style.display = mode !== AI.OFF ? 'block' : 'none';
+
+  // If switching to auto and game is running, trigger decision.
+  if (mode === AI.AUTO && gameState === 'playing' && currentPiece) {
+    aiNeedsDecision = true;
+  }
+
+  updateAIStatus();
+}
+
+function updateAIStatus() {
+  const el = document.getElementById('aiStatus');
+  if (!el) return;
+  if (!aiModelLoaded) {
+    el.textContent = aiModelLoading ? 'Loading model...' : 'No model loaded';
+    el.style.color = '#f55';
+  } else if (aiMode === AI.AUTO) {
+    el.textContent = 'AI Auto ✓';
+    el.style.color = '#4f5';
+  } else if (aiMode === AI.SUGGEST) {
+    el.textContent = 'AI Suggest ✓';
+    el.style.color = '#4cf';
+  } else {
+    el.textContent = 'Manual';
+    el.style.color = 'rgba(255,255,255,0.5)';
+  }
+}
+
+// --- Browser environment probe ---
+function probeBrowserEnv() {
+  const el = document.getElementById('browserProbeResult');
+  if (!el) return;
+  el.style.display = 'block';
+
+  const lines = [];
+
+  // Navigator info.
+  lines.push('浏览器: ' + (navigator.userAgentData?.platform || navigator.platform || 'Unknown'));
+  lines.push('内核: ' + (navigator.userAgentData?.brands?.[0]?.brand || navigator.appCodeName || 'Unknown'));
+
+  // WebGL check — needed for canvas rendering.
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+  const hasWebGL = !!gl;
+  const glInfo = hasWebGL ? (gl.getParameter(gl.RENDERER) || 'WebGL') : 'Not supported';
+  lines.push('GPU: ' + glInfo + (hasWebGL ? ' ✓' : ' ✗'));
+
+  // WebAssembly check — needed for ONNX Runtime.
+  const hasWasm = typeof WebAssembly !== 'undefined';
+  lines.push('WebAssembly: ' + (hasWasm ? 'Supported ✓' : 'Not supported ✗'));
+
+  // SharedArrayBuffer — needed for multi-threaded WASM backends.
+  const hasSab = typeof SharedArrayBuffer !== 'undefined';
+  lines.push('SharedArrayBuffer: ' + (hasSab ? 'Available ✓' : 'Not available (cross-origin isolation may help)'));
+
+  // Memory estimate via performance API.
+  let memInfo = 'Unknown';
+  if (performance.memory) {
+    const m = performance.memory;
+    memInfo = (m.jsHeapSizeLimit / 1048576).toFixed(0) + ' MB limit, ' +
+              (m.totalJSHeapSize / 1048576).toFixed(0) + ' MB used';
+  }
+  lines.push('JS Heap: ' + memInfo);
+
+  // Logical cores.
+  const cores = navigator.hardwareConcurrency || 'Unknown';
+  lines.push('CPU 线程: ' + cores);
+
+  // Recommendations.
+  const ok = hasWebGL && hasWasm;
+  if (ok) {
+    const memMB = performance.memory ? (performance.memory.jsHeapSizeLimit / 1048576) : 512;
+    let recSpeed = '3 (快)';
+    if (memMB < 128) recSpeed = '1 (慢)';
+    else if (memMB < 256) recSpeed = '2 (中)';
+    lines.push('');
+    lines.push('建议配置:');
+    lines.push('  模型上限: ' + (memMB > 1000 ? '大型 (>20MB)' : memMB > 400 ? '中型 (10-20MB)' : '小型 (<10MB)'));
+    lines.push('  AI 速度: ' + recSpeed);
+    if (!hasSab) lines.push('  注意: 缺少 SharedArrayBuffer, ONNX Runtime 可能较慢');
+  } else {
+    lines.push('');
+    if (!hasWebGL) lines.push('注意: WebGL 不可用 — 游戏渲染可能失败');
+    if (!hasWasm) lines.push('注意: WebAssembly 不可用 — AI 推理无法运行');
+  }
+
+  el.innerHTML = lines.join('<br>');
+}
+
+// --- Model file input handler ---
+document.getElementById('aiModelFile').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (file) {
+    const url = URL.createObjectURL(file);
+    loadAIModel(url);
+  }
+});
+
+// ==================== INITIAL DRAW ====================
+drawBoard();
+drawPreviews();
+</script>
+</body>
+</html>
