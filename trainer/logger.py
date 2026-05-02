@@ -13,7 +13,10 @@ from typing import Dict, Optional, Any
 
 
 class TeeLogger:
-    """Duplicates stdout to a log file (like Unix tee)."""
+    """Duplicates stdout to a log file (like Unix tee).
+
+    Replaces ``sys.stdout`` on construction; call ``close()`` to restore.
+    """
 
     def __init__(self, log_dir: str):
         os.makedirs(log_dir, exist_ok=True)
@@ -21,6 +24,7 @@ class TeeLogger:
         self.path = os.path.join(log_dir, f"train_{timestamp}.log")
         self._file = open(self.path, "w", encoding="utf-8", buffering=1)
         self._stdout = sys.stdout
+        sys.stdout = self
 
     def write(self, data):
         self._stdout.write(data)
@@ -33,13 +37,6 @@ class TeeLogger:
     def close(self):
         sys.stdout = self._stdout
         self._file.close()
-
-    def __enter__(self):
-        sys.stdout = self
-        return self
-
-    def __exit__(self, *args):
-        self.close()
 
 
 class Logger:
