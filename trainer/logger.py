@@ -1,6 +1,7 @@
 """Logging utilities for training metrics.
 
-Supports file logging, Weights & Biases, and local metrics history.
+Supports: file logging (TeeLogger), TensorBoard, Weights & Biases, and
+local JSON metrics history.
 """
 
 import time
@@ -40,17 +41,31 @@ class TeeLogger:
 
 
 class Logger:
-    """Unified logger for training metrics."""
+    """Unified logger for training metrics — local, TensorBoard, and WandB."""
 
     def __init__(self, log_dir: str = "logs", use_wandb: bool = False,
                  wandb_project: str = "tetris-ai", wandb_entity: str = "",
+                 use_tensorboard: bool = True,
                  config: Optional[dict] = None):
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
 
+        # TensorBoard.
+        self.use_tb = use_tensorboard
+        self.tb_writer = None
+        if use_tensorboard:
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+                tb_dir = os.path.join(log_dir, "tensorboard")
+                self.tb_writer = SummaryWriter(log_dir=tb_dir)
+                print(f"[Logger] TensorBoard enabled — run: tensorboard --logdir={tb_dir}")
+            except ImportError:
+                print("[WARN] tensorboard not installed (pip install tensorboard).")
+                self.use_tb = False
+
+        # WandB.
         self.use_wandb = use_wandb
         self.wandb_run = None
-
         if use_wandb:
             try:
                 import wandb
@@ -66,6 +81,7 @@ class Logger:
         self.metrics_history: Dict[str, list] = defaultdict(list)
         self.start_time = time.time()
 
+    # ------------------------------------------------------------------ #
     def log(self, metrics: Dict[str, Any], step: int):
         """Log a metrics dict at a given training step."""
         metrics["step"] = step
@@ -73,13 +89,37 @@ class Logger:
         self.metrics_history["step"].append(step)
 
         for k, v in metrics.items():
+            if k == "step":
+                continue
             self.metrics_history[k].append(v)
+
+            # TensorBoard.
+            if self.use_tb and self.tb_writer and isinstance(v, (int, float)):
+                self.tb_writer.add_scalar(k, v, step)
+
+            # WandB.
             if self.use_wandb and self.wandb_run:
                 import wandb
                 wandb.log({k: v}, step=step)
 
     def log_scalar(self, tag: str, value: float, step: int):
         self.log({tag: value}, step)
+
+    # ------------------------------------------------------------------ #
+    #  High-level logging helpers
+    # ------------------------------------------------------------------ #
+    def log_train_step(self, step: int, avg_reward: float, avg_lines: float,
+                       fps: float, buffer_size: int, elapsed: float,
+                       **extra):
+        """Log per-log-interval training scalars (the main curves)."""
+        self.log({
+            "train/avg_reward": avg_reward,
+            "train/avg_lines": avg_lines,
+            "train/fps": fps,
+            "train/buffer_size": buffer_size,
+            "train/elapsed_h": elapsed / 3600.0,
+            **{f"train/{k}": v for k, v in extra.items()},
+        }, step)
 
     def log_eval(self, step: int, avg_score: float, max_score: float,
                  min_score: float, std_score: float, avg_lines: float,
@@ -98,9 +138,12 @@ class Logger:
         }, step)
 
     def log_train(self, step: int, **kwargs):
-        """Log training step metrics."""
+        """Log training step metrics (DQN-specific: loss, q_mean, etc.)."""
         self.log({f"train/{k}": v for k, v in kwargs.items()}, step)
 
+    # ------------------------------------------------------------------ #
+    #  Persistence
+    # ------------------------------------------------------------------ #
     def save_metrics(self, filename: str = "metrics.json"):
         """Save all logged metrics to a JSON file."""
         path = os.path.join(self.log_dir, filename)
@@ -108,6 +151,8 @@ class Logger:
             json.dump(dict(self.metrics_history), f, indent=2)
 
     def close(self):
+        if self.tb_writer:
+            self.tb_writer.close()
         if self.use_wandb and self.wandb_run:
             import wandb
             wandb.finish()

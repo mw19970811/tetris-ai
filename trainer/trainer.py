@@ -367,6 +367,15 @@ class Trainer:
                 fps = (step - start_step) * self.num_envs / elapsed if elapsed > 0 else 0
                 eta = (elapsed / progress) - elapsed if progress > 0 else 0
                 avg_reward = np.mean(self.episode_rewards) if self.episode_rewards else 0
+                avg_lines = np.mean(self.episode_lines) if self.episode_lines else 0
+                buf_size = len(self.agent.memory) if hasattr(self.agent, 'memory') else 0
+
+                # TensorBoard curves.
+                self.logger.log_train_step(
+                    step, avg_reward=avg_reward, avg_lines=avg_lines,
+                    fps=fps, buffer_size=buf_size, elapsed=elapsed,
+                )
+
                 print(f"\r[{_timestamp()}]  "
                       f"Step {step:>9,}/{total_steps:,} ({progress:.1%})  "
                       f"|  Avg100R: {avg_reward:>10,.1f}  "
