@@ -14,7 +14,13 @@ ONNXModel::ONNXModel(const std::string& model_path, bool use_gpu)
     session_opts_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
     session_opts_.SetIntraOpNumThreads(4);
 
+    // Newer ORT (1.18+) requires wide string on Windows, Ort::Model intermediate otherwise.
+#ifdef _WIN32
+    std::wstring wpath(model_path.begin(), model_path.end());
+    session_ = std::make_unique<Ort::Session>(env_, wpath.c_str(), session_opts_);
+#else
     session_ = std::make_unique<Ort::Session>(env_, model_path.c_str(), session_opts_);
+#endif
 
     // Get input/output names.
     size_t num_inputs = session_->GetInputCount();

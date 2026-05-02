@@ -36,3 +36,6 @@ network:
   num_actions: 112
   use_noisy: true
   sigma_init: 0.017
+
+env:
+  use_cpp_env: true

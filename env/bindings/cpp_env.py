@@ -50,6 +50,10 @@ class CppTetrisEnv:
                     "cmake .. && cmake --build . --target tetris_core\n"
                     "Then add build/env/bindings to PYTHONPATH."
                 )
+        import sys
+        _platform = "Windows" if sys.platform == "win32" else "Linux"
+        print(f"[CppTetrisEnv] tetris_core C++ module loaded successfully "
+              f"(platform: {_platform}, module: {tc.__name__})")
         cpp_cfg = tc.EnvConfig()
         cpp_cfg.cols = config.cols
         cpp_cfg.rows = config.rows
@@ -171,6 +175,11 @@ class CppTetrisEnv:
     @property
     def score(self) -> int:
         return self._score
+
+    @property
+    def _current_piece_name_idx(self) -> int:
+        """Current piece index (0-6), matching TetrisEnv interface."""
+        return int(self._cpp_env.get_state().current_piece)
 
     # ------------------------------------------------------------------ #
     #  Render

@@ -12,7 +12,7 @@ class EnvConfig:
     next_queue_size: int = 4
     bag_type: str = "7bag"
     max_steps: int = 10000
-    use_cpp_env: bool = False  # Use C++ pybind11 backend for env simulation
+    use_cpp_env: bool = True  # Use C++ pybind11 backend for env simulation
     reward_weights: dict = field(default_factory=lambda: {
         "w_height": 0.3, "w_holes": 1.5, "w_bumpiness": 0.2,
         "w_well": 0.5, "w_survival": 0.01, "w_death": -100.0,

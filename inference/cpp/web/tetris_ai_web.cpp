@@ -38,11 +38,14 @@ void destroy_ai() {
 EMSCRIPTEN_KEEPALIVE
 int select_action() {
     if (!g_player || !g_env) return 0;
-    auto action = g_player->selectAction(*g_env);
+    const auto& state = g_env->getState();
+    auto action = g_player->selectAction(
+        state.board, state.current_piece, state.current_rotation,
+        state.hold_piece, state.can_hold, state.next_queue);
     // Pack rotation(2) + column(5) + hold(1) into one int.
     int packed = (action.rotation & 0x3)
                | ((action.column + 2) & 0x1F) << 2
-               | (action.hold_first ? 1 : 0) << 7;
+               | (action.hold ? 1 : 0) << 7;
     return packed;
 }
 
@@ -53,7 +56,7 @@ void step_env(int action_packed, float* reward, int* done, int* score, int* line
     tetris::Action action;
     action.rotation = action_packed & 0x3;
     action.column = ((action_packed >> 2) & 0x1F) - 2;
-    action.hold_first = (action_packed >> 7) & 1;
+    action.hold = (action_packed >> 7) & 1;
 
     float r = g_env->step(action);
     *reward = r;

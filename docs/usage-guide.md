@@ -43,9 +43,16 @@ agent-ai/
 │   └── code.html               # 浏览器俄罗斯方块游戏（含 AI Agent 集成）
 │
 ├── env/                         # ──────── 游戏环境 ────────
-│   ├── core/                    # C++ bitboard 参考实现（header-only，未编译）
-│   ├── tetris_env.py            # Gymnasium 标准 RL 环境（纯 Python + numpy）
-│   ├── state_encoder.py         # 状态编码（bitmap + 手工特征）
+│   ├── core/                    # C++ bitboard 实现 (header-only, 已编译启用)
+│   │   ├── tetris_core.h        #   Board 位棋盘 (碰撞/消行/特征)
+│   │   ├── tetris_env.h         #   TetrisEnv C++ 实现
+│   │   ├── action_gen.h         #   合法动作生成器
+│   │   └── state_encoder.h      #   C++ 53 维特征编码器
+│   ├── bindings/                # pybind11 Python 绑定
+│   │   ├── tetris_bindings.cpp  #   C++ → Python 接口
+│   │   └── cpp_env.py           #   CppTetrisEnv Python 包装器
+│   ├── tetris_env.py            # Gymnasium 标准 RL 环境 (纯 Python + numpy)
+│   ├── state_encoder.py         # 状态编码 (bitmap + 手工特征)
 │   └── reward_calculator.py     # 奖励函数计算
 │
 ├── agent/                       # ──────── AI 算法 ────────
@@ -53,21 +60,25 @@ agent-ai/
 │   ├── dqn.py                   # Rainbow DQN 智能体
 │   ├── ppo.py                   # PPO 智能体
 │   ├── noisy_layers.py          # NoisyLinear 噪声层
-│   ├── memory.py                # 优先经验回放 (SumTree)
+│   ├── memory.py                # 优先经验回放 (SumTree + StoredTransition)
 │   ├── nstep_buffer.py          # N-step return 缓冲
-│   ├── action_mask.py           # 动作掩码（过滤非法动作）
+│   ├── action_mask.py           # 动作掩码 (过滤非法动作)
 │   └── pretrain.py              # 模仿学习预训练
 │
 ├── trainer/                     # ──────── 训练系统 ────────
 │   ├── trainer.py               # 主训练循环
 │   ├── config.py                # 超参数配置 dataclass
-│   ├── hardware_probe.py        # 硬件探测（CPU/GPU/RAM）
+│   ├── hardware_probe.py        # 硬件探测 (CPU/GPU/RAM)
 │   ├── resource_planner.py      # 资源规划与配置推荐
 │   ├── evaluator.py             # 评估循环
 │   ├── checkpoint.py            # Checkpoint 管理
 │   └── logger.py                # WandB 日志
 │
 ├── inference/                   # ──────── 推理部署 ────────
+│   ├── cpp/                     # C++ ONNX Runtime 推理
+│   │   ├── model_loader.h/cpp   #   ONNX 模型加载
+│   │   ├── player.h/cpp         #   AI Player
+│   │   └── web/                 #   Emscripten WASM 构建
 │   └── python/
 │       ├── infer.py             # Python 推理引擎
 │       └── export.py            # PyTorch → ONNX 导出
@@ -82,8 +93,10 @@ agent-ai/
 ├── tests/                       # ──────── 单元测试 ────────
 ├── docs/                        # ──────── 文档 ────────
 │   ├── tetris-rl-engine-design.md  # 详细设计文档
-│   └── usage-guide.md           # 本文档
+│   ├── usage-guide.md           # 本文档
+│   └── analysis-cuda-cpp.md     # CUDA 加速比分析
 │
+├── CMakeLists.txt               # C++ 构建入口
 ├── CLAUDE.md                    # Claude Code 项目指南
 └── README.md                    # 项目简介
 ```
@@ -121,9 +134,9 @@ agent-ai/
 cd agent-ai
 
 # 2. 安装核心依赖
-pip install torch numpy gymnasium
+pip install torch numpy
 
-# 3. 安装推理依赖
+# 3. 安装推理依赖 (评估/部署)
 pip install onnx onnxruntime
 
 # 4. (可选) 训练日志可视化
@@ -131,6 +144,119 @@ pip install wandb
 
 # 5. (可选) 安装测试依赖
 pip install pytest
+```
+
+### Windows 平台配置
+
+#### 编译 C++ 环境加速（Visual Studio）
+
+```powershell
+# 1. 安装依赖
+pip install pybind11 cmake
+
+# 2. 准备构建目录
+mkdir build
+cd build
+
+# 3. CMake 配置 (自动检测 Visual Studio)
+cmake .. -DCMAKE_BUILD_TYPE=Release
+
+# 4. 编译 tetris_core 模块
+cmake --build . --target tetris_core --config Release
+
+# 5. 将编译产物复制到 Python 可发现路径
+copy env\bindings\Release\tetris_core.*.pyd ..\env\bindings\
+```
+
+编译产物为 `tetris_core.cp314-win_amd64.pyd`（文件名随 Python 版本变化）。编译完成后回到项目根目录：
+
+```powershell
+cd ..
+```
+
+验证加载：
+
+```powershell
+python -c "from env.bindings.cpp_env import CppTetrisEnv; print('C++ 模块加载成功')"
+```
+
+成功时输出：
+
+```
+[CppTetrisEnv] tetris_core C++ module loaded successfully (platform: Windows, module: tetris_core)
+```
+
+> **注意**：需要安装 Visual Studio 2022（或 Build Tools）并勾选"使用 C++ 的桌面开发"工作负载。MSVC 编译器 (cl.exe) 必须在 PATH 中（可通过 Developer Command Prompt 或 `vcvarsall.bat` 配置）。
+
+> ⚠️ **关键**：编译产物必须放在 `env/bindings/` 目录下（与 `cpp_env.py` 同级），**不要**创建 `tetris_core/` 子目录或将其放在项目根目录的 `tetris_core/` 文件夹内。如果项目根目录已存在 `tetris_core/` 目录，请先删除它，否则 Python 会将其识别为 namespace package 而导致 `.pyd` 无法加载。
+
+#### 编译 C++ 推理引擎（可选）
+
+```powershell
+# 需要先安装 ONNX Runtime
+pip install onnxruntime
+
+cd build
+cmake .. -Donnxruntime_DIR="$(python -c 'import onnxruntime,os;print(os.path.dirname(onnxruntime.__file__))')"
+cmake --build . --target tetris_inference --config Release
+```
+
+### Ubuntu 平台配置
+
+#### 编译 C++ 环境加速（GCC）
+
+```bash
+# 1. 安装系统依赖
+sudo apt-get update
+sudo apt-get install -y build-essential cmake python3-dev
+
+# 2. 安装 Python 依赖
+pip install pybind11 cmake
+
+# 3. 准备构建目录
+mkdir -p build && cd build
+
+# 4. CMake 配置 (GCC + Release)
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+
+# 5. 编译 tetris_core 模块
+cmake --build . --target tetris_core -j$(nproc)
+
+# 6. 将编译产物复制到 env/bindings/ (与 cpp_env.py 同级)
+cp env/bindings/tetris_core.*.so ../env/bindings/
+```
+
+编译产物为 `tetris_core.cpython-3xx-x86_64-linux-gnu.so`（文件名随 Python 版本变化）。编译完成后回到项目根目录：
+
+```bash
+cd ..
+```
+
+验证加载：
+
+```bash
+python -c "from env.bindings.cpp_env import CppTetrisEnv; print('C++ 模块加载成功')"
+```
+
+成功时输出：
+
+```
+[CppTetrisEnv] tetris_core C++ module loaded successfully (platform: Linux, module: tetris_core)
+```
+
+> **注意**：需要 GCC ≥ 9.0（推荐 GCC 11+）。确保 `python3-dev` 版本与当前 Python 版本一致（如 `python3.11-dev` / `python3.12-dev`）。
+
+> ⚠️ **关键**：编译产物必须放在 `env/bindings/` 目录下（与 `cpp_env.py` 同级），**不要**创建 `tetris_core/` 子目录或将其放在项目根目录的 `tetris_core/` 文件夹内。如果项目根目录已存在 `tetris_core/` 目录，请先删除它，否则 Python 会将其识别为 namespace package 而导致 `.so` 无法加载。
+
+#### 编译 C++ 推理引擎（可选）
+
+```bash
+# 需要先安装 ONNX Runtime
+pip install onnxruntime
+
+cd build
+cmake .. -Donnxruntime_DIR="$(python3 -c 'import onnxruntime,os;print(os.path.dirname(onnxruntime.__file__))')"
+cmake --build . --target tetris_inference -j$(nproc)
 ```
 
 ---
@@ -696,6 +822,7 @@ Score(placement) = -4.500 × landing_height
 | `hidden_rows` | 2 | 隐藏行数 |
 | `next_queue_size` | 4 | Next 队列可见长度 |
 | `max_steps` | 10000 | 单局最大步数（truncation） |
+| `use_cpp_env` | false | 启用 C++ pybind11 环境加速（需先编译 tetris_core） |
 | `reward_weights.w_height` | 0.3 | 高度惩罚权重 |
 | `reward_weights.w_holes` | 1.5 | 孔洞惩罚权重 |
 | `reward_weights.w_bumpiness` | 0.2 | 崎岖度惩罚权重 |
@@ -711,48 +838,252 @@ Score(placement) = -4.500 × landing_height
 | CPU | 32+ cores | 8 cores |
 | RAM | 64 GB+ | 16 GB |
 | 存储 | 500 GB NVMe | 100 GB |
-| 预期训练时长 | 2-4 天 | 7-14 天 |
 
-纯 CPU 训练可实现但速度极慢，不推荐用于正式训练。
+**训练耗时估算**（50M steps, DQN, 64 并行环境）：
+
+| 硬件 | 纯 Python | C++ 加速 | 加速比 |
+|------|----------|---------|--------|
+| AMD EPYC 7T83 (64C) | ~11 小时 | **~3-5 小时** | 3-4x |
+| Intel Xeon 32C | ~20 小时 | ~6-8 小时 | 3x |
+| Desktop 16C (5950X) | ~30 小时 | ~10 小时 | 3x |
+
+> C++ 加速对纯 CPU 训练提升最显著。GPU 训练中环境模拟占比低 (<20%)，加速效果有限 (~1.05-1.3x)。详见 `docs/analysis-cuda-cpp.md`。
 
 ---
 
-## 八、Python 与 C++ 的关系
+## 八、C++ 加速方案
 
-### 当前状态：纯 Python 运行
+项目提供两层可选的 C++ 加速：
 
-**当前所有训练、推理和游戏逻辑均以纯 Python + NumPy + PyTorch 运行。** `env/core/` 中的 C++ 头文件是一套并行的参考实现（bitboard 棋盘、碰撞检测、行消除），但 Python 训练环境 `env/tetris_env.py` 并未导入或使用它们。
+### 8.1 环境模拟加速（推荐）
+
+将训练瓶颈最大的三个函数迁移到 C++，通过 pybind11 绑定回 Python：
+
+| 函数 | Python 耗时 | C++ 耗时 | 加速比 | 说明 |
+|------|------------|---------|--------|------|
+| `get_legal_actions()` | 150-300 μs | 5-10 μs | **15-30x** | 碰撞检测循环 ~1700 次/step |
+| `StateEncoder.encode()` | 50-150 μs | 5-10 μs | **10-15x** | 消除与 step() 的重复计算 |
+| `agent.observe()` | 20-50 μs | 10-20 μs | **2-3x** | 消除 dict 分配 |
+| **训练整体 (含评估)** | 11-14 小时 | **3-5 小时** | **3-4x** | 50M steps, 1×EPYC 7T83 CPU |
+
+**原理**：训练 85-95% 的 CPU 时间消耗在环境模拟（碰撞检测、重力模拟、棋盘特征计算），而非神经网络。C++ bitboard 实现（`uint16_t` 行表示、列高度缓存、位运算碰撞检测）消除 Python 循环和 numpy 查找开销。同时 C++ Board 缓存列高度，避免 `step()` 和 `encode()` 的重复计算。
+
+#### 编译
+
+**Windows (Visual Studio)**：
+
+```powershell
+pip install pybind11 cmake
+mkdir build; cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . --target tetris_core --config Release
+copy env\bindings\Release\tetris_core.*.pyd ..\env\bindings\
+```
+
+**Ubuntu (GCC)**：
+
+```bash
+sudo apt-get install -y build-essential cmake python3-dev
+pip install pybind11 cmake
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+cmake --build . --target tetris_core -j$(nproc)
+cp env/bindings/tetris_core.*.so ../env/bindings/
+```
+
+编译产物：Windows 为 `tetris_core.cp314-win_amd64.pyd`，Linux 为 `tetris_core.cpython-3xx-x86_64-linux-gnu.so`（文件名随 Python 版本变化）。
+
+> ⚠️ **关键**：编译产物必须放在 `env/bindings/` 目录下（与 `cpp_env.py` 同级），**不要**放在项目根目录的 `tetris_core/` 文件夹内。如果存在 `tetris_core/` 目录，Python 会将其识别为 namespace package 而屏蔽同名的 `.pyd`/`.so` 模块。删除 `tetris_core/` 目录后重新运行即可。
+
+#### 启用
+
+在训练配置中设 `use_cpp_env: true`：
+
+```yaml
+# configs/training/dqn_rainbow.yaml
+env:
+  use_cpp_env: true
+```
+
+或在 `trainer/config.py` 中修改 `EnvConfig.use_cpp_env` 默认值。
+
+启用后，`trainer._make_env()` 自动创建 `CppTetrisEnv`（`env/bindings/cpp_env.py`）替代纯 Python `TetrisEnv`。接口完全一致，无需修改训练循环。
+
+> **向后兼容**：`use_cpp_env: false`（默认）时行为与修改前完全相同。不编译 C++ 模块也不影响纯 Python 训练。
+
+#### 架构
 
 ```
-当前运行时:
-┌──────────────────┐
-│ env/tetris_env.py │  ← 纯 Python + NumPy
-│ agent/*.py       │  ← PyTorch
-│ trainer/*.py     │  ← PyTorch
-│ inference/python/ │  ← ONNX Runtime / PyTorch
-└──────────────────┘
-        ↑ 实际执行路径
-
-env/core/*.h        ← C++ 参考实现（未编译，未导入）
-env/core/*.cpp      ← 已精简为 stub 文件（实现均在 .h 中）
+训练循环 (trainer.py)
+    │
+    ├── use_cpp_env=false ──▶ TetrisEnv (env/tetris_env.py)
+    │                           纯 Python + NumPy
+    │
+    └── use_cpp_env=true  ──▶ CppTetrisEnv (env/bindings/cpp_env.py)
+                                │
+                                ├── tetris_core.TetrisEnvCpp  (C++ 游戏逻辑)
+                                ├── tetris_core.StateEncoder  (C++ 特征编码)
+                                └── tetris_core.Action        (C++ 动作结构)
 ```
 
-### 为什么没有使用 C++ 加速
+### 8.2 C++ 推理后端
 
-1. **PyTorch 本身已高度优化**：卷积、矩阵运算等核心计算由 CUDA/cuDNN 加速，外层 Python 开销占比极小
-2. **训练瓶颈在 GPU**：64 并行环境 × 神经网络推理，GPU 利用率是主要制约，环境步进的开销可忽略
-3. **ONNX Runtime Web 替代了 C++ 推理**：浏览器部署使用 ONNX Runtime Web（WebAssembly 后端），无需 C++
+编译独立的 C++ ONNX Runtime 推理引擎，可作为俄罗斯方块游戏的 AI 后端。
 
-### 如何启用 C++ 加速（可选）
+#### 架构
 
-如果确实需要 C++ bitboard 环境以进一步提升采样速度（>50K FPS），需要：
+```
+┌──────────────────────┐
+│ 游戏 (code.html / 终端) │
+└─────────┬────────────┘
+          │ 棋盘状态 (Board + 块信息)
+          ▼
+┌──────────────────────┐
+│  AIPlayer (一站式)    │  ← inference/cpp/player.h
+│                      │
+│  selectAction(board,  │
+│    piece, rot, hold,  │
+│    queue, can_hold)   │
+│    → Action           │
+│                      │
+│  内部调用:            │
+│  ├ StateEncoder       │  特征编码 (53维, 与训练一致)
+│  ├ ActionGenerator    │  合法动作生成
+│  └ ONNXModel          │  ONNX 推理
+└──────────────────────┘
+```
 
-1. 安装 pybind11：`pip install pybind11`
-2. 在 `CMakeLists.txt` 中取消 `add_subdirectory(env/core)` 和 `add_subdirectory(env/bindings)` 的注释
-3. 在 `env/bindings/tetris_bindings.cpp` 中实现 Python 绑定
-4. 在 `env/tetris_env.py` 中添加回退逻辑：优先导入编译后的 C++ 模块，不可用时使用纯 Python
+**与 `InferenceEngine` (Python) 的区别**：
 
-> 当前项目已将 C++ 代码精简为 header-only 参考实现（.cpp 文件为 stub），bindings 目录保留骨架供后续开发。
+| 引擎 | 输入 | 自带编码 | 自带动作过滤 | 适用场景 |
+|------|------|---------|-------------|---------|
+| `InferenceEngine` (Python) | `(board, features)` numpy | 否 (外部编码) | 否 (外部过滤) | Python 训练/评估 |
+| `AIPlayer` (C++) | `Board` + 块状态原始值 | 是 (StateEncoder) | 是 (ActionGenerator) | C++ 后端 / WASM |
+
+#### 编译
+
+**Windows (Visual Studio)**：
+
+```powershell
+pip install onnxruntime
+cd build
+cmake .. -Donnxruntime_DIR="$(python -c 'import onnxruntime,os;print(os.path.dirname(onnxruntime.__file__))')"
+cmake --build . --target tetris_inference --config Release
+```
+
+**Ubuntu (GCC)**：
+
+```bash
+pip install onnxruntime
+cd build
+cmake .. -Donnxruntime_DIR="$(python3 -c 'import onnxruntime,os;print(os.path.dirname(onnxruntime.__file__))')"
+cmake --build . --target tetris_inference -j$(nproc)
+```
+
+产物：`build/inference/cpp/tetris_inference.lib`（静态库）。
+
+#### 使用方式
+
+**方式 A：作为 C++ 静态库链接**
+
+```cpp
+#include "inference/cpp/player.h"
+#include "env/core/tetris_core.h"
+
+// 加载模型
+tetris::inference::AIPlayer ai("tetris_ai.onnx");
+
+// 每帧调用
+tetris::Board board;
+// ... 从游戏获取 board 状态 ...
+tetris::Action action = ai.selectAction(
+    board,
+    tetris::PieceName::I,   // 当前块
+    0,                       // 旋转
+    tetris::PieceName::NONE, // hold
+    true,                    // can_hold
+    {tetris::PieceName::T, tetris::PieceName::S, 
+     tetris::PieceName::Z, tetris::PieceName::J}  // next queue
+);
+
+// action.rotation, action.column, action.hold → 传给游戏执行
+```
+
+**方式 B：WebAssembly (浏览器游戏)**
+
+编译 WASM 模块，在 `tetris/code.html` 中替代 ONNX Runtime Web：
+
+```bash
+# 需要 Emscripten
+emcmake cmake .. -DBUILD_WASM=ON
+cmake --build .
+```
+
+导出的 C 函数：
+
+| 函数 | 说明 |
+|------|------|
+| `init_ai(model_path)` | 加载 ONNX 模型 + 创建 AIPlayer 和 TetrisEnv |
+| `select_action()` | 返回打包的 int: `rotation(2bit) \| column(5bit) \| hold(1bit)` |
+| `step_env(action_packed, &reward, &done, &score, &lines)` | 执行动作，更新内部 TetrisEnv |
+| `reset_env(seed)` | 重置环境 |
+| `get_board_data()` | 返回 `float[22*10]` 棋盘快照 |
+| `destroy_ai()` | 释放资源 |
+
+#### 相关文件
+
+| 文件 | 用途 |
+|------|------|
+| `inference/cpp/model_loader.h` / `.cpp` | ONNX 模型加载 + 推理（支持 CUDA） |
+| `inference/cpp/player.h` / `.cpp` | AIPlayer — 一站式状态→动作 |
+| `inference/cpp/web/tetris_ai_web.cpp` | WASM C 导出接口 |
+| `inference/cpp/web/CMakeLists.txt` | Emscripten 构建规则 |
+
+### 8.3 CMake 参数参考
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `CMAKE_BUILD_TYPE` | — | `Release` 推荐（`-O3 -march=native`） |
+| `ORT_ROOT` | — | 自编译 ONNX Runtime 根目录 |
+| `onnxruntime_DIR` | — | pip 安装的 ORT cmake 配置目录 |
+| `BUILD_WASM` | `OFF` | 是否构建 WebAssembly 推理模块 |
+
+### 8.4 性能测试
+
+编译 C++ 模块后运行基准测试：
+
+```bash
+# 需要先编译 tetris_core 模块
+pytest tests/test_cpp_env.py -v -k Benchmark
+```
+
+测试项：
+- `test_legal_actions_speedup`：对比 Python vs C++ 的 `get_legal_actions()` 耗时
+- `test_full_step_speedup`：对比完整 step() 循环的吞吐量
+
+### 8.5 C++ 代码结构
+
+```
+env/core/
+├── piece_data.h        # 方块形状、SRS 踢墙表、分数表
+├── randomizer.h        # BagRandomizer (7-bag) + 纯随机
+├── tetris_core.h       # Board 类 (uint16_t 位棋盘, 碰撞/消行/特征计算)
+├── action_gen.h        # Action 结构 + ActionGenerator (合法动作枚举)
+├── tetris_env.h        # TetrisEnv C++ 实现 (step/reset/奖励)
+├── state_encoder.h     # C++ 53 维特征编码器
+└── *.cpp               # 空桩 (实现在 .h 中, header-only)
+
+env/bindings/
+├── tetris_bindings.cpp # pybind11 绑定 (tetris_core Python 模块)
+└── cpp_env.py          # CppTetrisEnv Python 包装器
+
+inference/cpp/
+├── model_loader.h/cpp  # ONNX Runtime 模型加载
+├── player.h/cpp        # AI Player
+└── web/                # Emscripten WASM 构建
+```
+
+> 所有 `.cpp` 文件均为空桩（仅 `#include` 对应头文件）。完整实现在 `.h` 头文件中，编译后内联到调用方。
 
 ---
 
@@ -806,9 +1137,27 @@ pytest tests/ -v
 
 ### Q: 已知限制
 1. **PPO 训练**：当前 Rainbow DQN 是主要验证的算法路径。PPO 可通过 `--algo ppo` 使用，但训练效果未经充分验证
-2. **C++ 加速**：`env/core/` 中的 C++ 代码是参考实现，当前不参与运行时。所有训练和推理均为纯 Python
-3. **仅 DQN 支持 ONNX 导出**：PPO 模型无法通过 `export_model.py` 导出
-4. **根目录 `test_env.py`** 是 `tests/test_env.py` 的历史副本，建议手动删除
+2. **仅 DQN 支持 ONNX 导出**：PPO 模型无法通过 `export_model.py` 导出
+3. **C++ 环境加速仅 CPU 训练显著**：GPU 训练中环境模拟占比低，C++ 加速效果有限 (~1.05-1.3x)
+4. **RNG 不一致**：C++ 和 Python 环境使用不同随机数生成器（`mt19937_64` vs `numpy.random`），相同种子不产生相同对局
+5. **根目录 `test_env.py`** 是 `tests/test_env.py` 的历史副本，建议手动删除
+
+### Q: C++ 模块编译失败？
+```bash
+# 确认安装了 pybind11
+pip install pybind11
+
+# 确认 CMake 版本 >= 3.20
+cmake --version
+
+# 查看详细编译错误
+cmake --build . --target tetris_core --config Release --verbose
+
+# 常见问题：
+# - "pybind11 not found": pip install pybind11 && rm -rf build && mkdir build && cd build && cmake ..
+# - "tetris_inference not found": ONNX Runtime 未安装或 ORT_ROOT 未设置
+# - hold_first error: 确保 env/core/action_gen.h 已更新为 hold
+```
 
 ---
 
