@@ -1,14 +1,20 @@
 # Rainbow DQN training configuration.
+#
+# total_samples is the primary knob — total transitions fed to the optimizer.
+# Derived: total_steps = total_samples × train_every / batch_size
+#   1B × 4 / 256 ≈ 15.6M env steps @ batch_size=256
+#
 training:
   algorithm: "dqn"
-  total_steps: 50_000_000
+  total_samples: 1_000_000_000
   eval_every: 10_000
   eval_episodes: 100
-  save_every: 50_000
+  save_every: 10_000
   log_every: 100
   num_envs: 64
   use_pretrain: true
   num_pretrain_episodes: 1000
+  num_pretrain_envs: 16
   pretrain_epochs: 50
   device: "cuda"
   seed: 42
@@ -16,12 +22,12 @@ training:
 dqn:
   gamma: 0.99
   n_step: 5
-  lr: 6.25e-5          # Adam learning rate
-  batch_size: 32
+  lr: 2.5e-5           # Conservative: slower learning for stability
+  batch_size: 256
   train_every: 4        # Train every N environment steps
   target_update_freq: 8000
   target_update_tau: 0.005
-  use_hard_update: true
+  use_hard_update: false    # Polyak soft updates (τ=0.005) — target tracks online continuously
   replay_capacity: 1_000_000
   per_alpha: 0.6         # PER priority exponent
   per_beta_start: 0.4    # IS correction start
@@ -35,7 +41,7 @@ network:
   feature_dim: 53
   num_actions: 112
   use_noisy: true
-  sigma_init: 0.017
+  sigma_init: 0.01       # Lower initial noise for conservative exploration
 
 env:
   use_cpp_env: true

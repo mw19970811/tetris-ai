@@ -1,13 +1,45 @@
 """Logging utilities for training metrics.
 
-Supports both TensorBoard and Weights & Biases backends.
+Supports file logging, Weights & Biases, and local metrics history.
 """
 
 import time
 import json
 import os
+import sys
+from datetime import datetime
 from collections import defaultdict
 from typing import Dict, Optional, Any
+
+
+class TeeLogger:
+    """Duplicates stdout to a log file (like Unix tee)."""
+
+    def __init__(self, log_dir: str):
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.path = os.path.join(log_dir, f"train_{timestamp}.log")
+        self._file = open(self.path, "w", encoding="utf-8", buffering=1)
+        self._stdout = sys.stdout
+
+    def write(self, data):
+        self._stdout.write(data)
+        self._file.write(data)
+
+    def flush(self):
+        self._stdout.flush()
+        self._file.flush()
+
+    def close(self):
+        sys.stdout = self._stdout
+        self._file.close()
+
+    def __enter__(self):
+        sys.stdout = self
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 
 class Logger:
@@ -30,7 +62,7 @@ class Logger:
                     config=config, dir=log_dir,
                 )
             except ImportError:
-                print("[WARN] wandb not installed, falling back to TensorBoard only.")
+                print("[WARN] wandb not installed, falling back to file logging only.")
                 self.use_wandb = False
 
         # Local metrics storage.

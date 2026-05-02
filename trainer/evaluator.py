@@ -5,6 +5,7 @@ import torch
 from typing import Dict
 from collections import defaultdict
 from agent.action_mask import decode_action
+from env.tetris_env import Action
 
 
 class Evaluator:
@@ -53,7 +54,6 @@ class Evaluator:
                     )
                     rot, col, hold = decode_action(action_idx)
 
-                from env.tetris_env import Action
                 action = Action(rot, col, hold)
                 obs, reward, terminated, truncated, info = env.step(action)
                 board, features = obs[0], obs[1]

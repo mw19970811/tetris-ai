@@ -14,7 +14,7 @@ from .config import TrainingConfig, EnvConfig, NetworkConfig, DQNConfig, PPOConf
 MB_PER_ENV = 2.0             # board + features + workspace per env instance
 MB_PER_TRANSITION = 0.002    # ~2 KB per stored (s,a,r,s',d) in replay buffer
 MB_MODEL_WEIGHTS = 10.0      # DuelingDQN weights (~2-5 MB; padded overhead)
-MB_BATCH_PEAK = 200.0        # Peak for forward+backward pass with batch_size=32
+MB_BATCH_PEAK = 200.0        # Peak for forward+backward pass with batch_size=32 (scales linearly)
 MB_PYTORCH_OVERHEAD = 300.0  # CUDA context, allocator overhead
 MB_OS_BUFFER = 500.0         # Leave room for OS + other processes
 
@@ -104,7 +104,7 @@ def plan(info: SystemInfo, algorithm: str = "dqn",
         usable_ram_mb = (ram_avail - 1.0) * 1024  # leave 1 GB for OS
         max_envs = max(1, int(usable_ram_mb / MB_PER_ENV))
         recommended_envs = min(user_envs or cpu_cores, max_envs, 64)
-        batch_size = min(user_batch or 32, 32)
+        batch_size = user_batch or 128
         replay_cap = min(500_000, int(usable_ram_mb / MB_PER_TRANSITION))
         threads = min(cpu_cores, recommended_envs)
         notes.append(f"CPU mode: {cpu_cores} physical cores → {recommended_envs} envs, {threads} threads.")
@@ -114,11 +114,11 @@ def plan(info: SystemInfo, algorithm: str = "dqn",
             warnings.append(f"Only {cpu_cores} CPU cores — training will be slow. Consider a machine with 8+ cores.")
 
     elif mode == "cuda":
-        # Single GPU: VRAM-bound.
+        # Single GPU: VRAM-bound (but model is ~139K params, batch_size is not a VRAM bottleneck).
         usable_vram_mb = (gpu_free - 0.3) * 1024  # leave 300 MB headroom
         max_envs = max(1, int(usable_vram_mb * 0.3 / MB_PER_ENV))  # envs take ~30% of budget
         recommended_envs = min(user_envs or 64, max_envs, 128)
-        batch_size = min(user_batch or 32, 64)
+        batch_size = user_batch or 256
         replay_cap = min(1_000_000, int(ram_avail * 1024 / MB_PER_TRANSITION))
         threads = cpu_cores
         notes.append(f"CUDA mode: {info.gpus[0].name} ({gpu_mem:.1f} GB VRAM, {gpu_free:.1f} GB free).")
@@ -131,14 +131,14 @@ def plan(info: SystemInfo, algorithm: str = "dqn",
         usable_vram_mb = (gpu_free - 0.5) * 1024
         max_envs = max(1, int(usable_vram_mb * 0.2 / MB_PER_ENV))
         recommended_envs = min(user_envs or gpu_count * 32, max_envs, 256)
-        batch_size = min(user_batch or 64, 128)
+        batch_size = user_batch or 512
         replay_cap = min(2_000_000, int(ram_avail * 1024 / MB_PER_TRANSITION))
         threads = cpu_cores
         notes.append(f"Multi-GPU mode: {gpu_count} × {info.gpus[0].name} ({gpu_mem:.1f} GB each).")
 
     else:
         recommended_envs = 1
-        batch_size = 16
+        batch_size = 64
         replay_cap = 100_000
         threads = 1
 
@@ -151,7 +151,7 @@ def plan(info: SystemInfo, algorithm: str = "dqn",
 
     # Clip to safe minimums.
     recommended_envs = max(1, recommended_envs)
-    batch_size = max(8, batch_size)
+    batch_size = max(16, batch_size)
     replay_cap = max(100_000, min(replay_cap, 2_000_000))
 
     # Estimate memory.
@@ -184,7 +184,7 @@ def plan(info: SystemInfo, algorithm: str = "dqn",
 
 
 def apply_plan(plan: ResourcePlan, algorithm: str = "dqn",
-               total_steps: int = 50_000_000) -> TrainingConfig:
+               total_samples: int = 1_000_000_000) -> TrainingConfig:
     """Apply a resource plan to produce a concrete TrainingConfig."""
     env_cfg = EnvConfig()
     net_cfg = NetworkConfig()
@@ -202,7 +202,7 @@ def apply_plan(plan: ResourcePlan, algorithm: str = "dqn",
 
     return TrainingConfig(
         algorithm=algorithm,
-        total_steps=total_steps,
+        total_samples=total_samples,
         num_envs=plan.recommended_num_envs,
         device=device,
         env=env_cfg,

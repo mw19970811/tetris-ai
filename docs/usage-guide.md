@@ -772,13 +772,20 @@ Score(placement) = -4.500 × landing_height
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `algorithm` | `"dqn"` | 算法选择：`"dqn"` 或 `"ppo"` |
-| `total_steps` | 50,000,000 | 总训练步数 |
+| `total_samples` | 1,000,000,000 | 总训练样本数（batch-invariant），自动推导 env steps |
 | `eval_every` | 10,000 | 评估间隔（步） |
 | `eval_episodes` | 100 | 每次评估的局数 |
-| `save_every` | 50,000 | Checkpoint 保存间隔 |
+| `save_every` | 10,000 | Checkpoint 保存间隔 |
 | `num_envs` | 64 | 并行环境数 |
+| `num_pretrain_envs` | 16 | 预训练数据收集的并行环境数 |
+| `pretrain_sample_tag` | `"latest"` | 预训练样本文件标签 |
 | `device` | `"cuda"` | 训练设备 |
 | `seed` | 42 | 随机种子 |
+
+> **`total_samples` 说明**：不再配置 `total_steps`，改为配置总训练样本数。
+> 自动推导公式（DQN）：`total_steps = total_samples × train_every / batch_size`
+> 默认 1B 样本 + batch_size=256 → 约 15.6M env steps。
+> 仍可通过 CLI `--steps` 直接覆盖。
 
 ### 6.2 Rainbow DQN 配置 (DQNConfig)
 
@@ -786,11 +793,12 @@ Score(placement) = -4.500 × landing_height
 |------|--------|------|
 | `gamma` | 0.99 | 折扣因子 |
 | `n_step` | 5 | N-step return 步数 |
-| `lr` | 6.25e-5 | 学习率 |
-| `batch_size` | 32 | 训练批大小 |
+| `lr` | 2.5e-5 | 学习率（保守，适配 batch_size=256） |
+| `batch_size` | 256 | 训练批大小 |
 | `train_every` | 4 | 每 N 环境步训练一次 |
-| `target_update_freq` | 8000 | 目标网络硬更新频率 |
-| `target_update_tau` | 0.005 | 软更新系数（与硬更新互斥） |
+| `target_update_freq` | 8000 | 目标网络硬更新频率（仅 `use_hard_update=true` 时生效） |
+| `target_update_tau` | 0.005 | 软更新系数 τ |
+| `use_hard_update` | **false** | Polyak 软更新（推荐；避免灾难性遗忘） |
 | `replay_capacity` | 1,000,000 | 回放缓冲区容量 |
 | `per_alpha` | 0.6 | PER 优先级指数 |
 | `per_beta_start` | 0.4 | IS 修正初始值 |
@@ -798,7 +806,18 @@ Score(placement) = -4.500 × landing_height
 | `per_beta_frames` | 10,000,000 | β 衰减帧数 |
 | `grad_clip_norm` | 10.0 | 梯度裁剪阈值 |
 
-### 6.3 PPO 配置 (PPOConfig)
+### 6.3 Network 配置 (NetworkConfig)
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `cnn_channels` | 32 | CNN 通道数 |
+| `hidden_dim` | 128 | MLP 隐藏维度 |
+| `feature_dim` | 53 | 手工特征维度 |
+| `num_actions` | 112 | 最大动作数 |
+| `use_noisy` | true | 使用 NoisyNet（学习型探索） |
+| `sigma_init` | **0.01** | NoisyNet 初始噪声（保守，配合大 batch_size） |
+
+### 6.4 PPO 配置 (PPOConfig)
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -813,7 +832,7 @@ Score(placement) = -4.500 × landing_height
 | `n_epochs` | 4 | 更新轮数 |
 | `rollout_steps` | 2048 | 收集步数 |
 
-### 6.4 环境配置 (EnvConfig)
+### 6.5 环境配置 (EnvConfig)
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -822,11 +841,16 @@ Score(placement) = -4.500 × landing_height
 | `hidden_rows` | 2 | 隐藏行数 |
 | `next_queue_size` | 4 | Next 队列可见长度 |
 | `max_steps` | 10000 | 单局最大步数（truncation） |
-| `use_cpp_env` | false | 启用 C++ pybind11 环境加速（需先编译 tetris_core） |
-| `reward_weights.w_height` | 0.3 | 高度惩罚权重 |
-| `reward_weights.w_holes` | 1.5 | 孔洞惩罚权重 |
-| `reward_weights.w_bumpiness` | 0.2 | 崎岖度惩罚权重 |
-| `reward_weights.w_well` | 0.5 | 井深惩罚权重 |
+| `use_cpp_env` | **true** | 启用 C++ pybind11 环境加速 |
+| `reward_weights.w_height` | 0.0 | 高度惩罚权重（诊断期归零） |
+| `reward_weights.w_holes` | 0.0 | 孔洞惩罚权重（诊断期归零） |
+| `reward_weights.w_bumpiness` | 0.0 | 崎岖度惩罚权重（诊断期归零） |
+| `reward_weights.w_well` | 0.0 | 井深惩罚权重（诊断期归零） |
+| `reward_weights.w_survival` | 0.01 | 存活奖励（诊断期保留） |
+| `reward_weights.w_death` | -100.0 | 死亡惩罚（诊断期保留） |
+
+> ⚠️ **诊断期说明**：惩罚权重当前全部归零，仅保留消行奖励、存活奖励和死亡惩罚。
+> 这是为了排除奖励塑形导致的灾难性遗忘。收敛稳定后可逐步恢复惩罚权重。
 
 ---
 
@@ -1089,11 +1113,19 @@ inference/cpp/
 
 ## 九、常见问题
 
-### Q: 训练不收敛怎么办？
-1. 检查奖励函数的权重是否合理（孔洞惩罚应该是最高的）
-2. 确保使用了模仿学习预训练（`use_pretrain: true`）
-3. 尝试降低学习率到 `2.5e-5`
-4. 从课程学习的低速阶段重新开始
+### Q: 训练不收敛 / 分数崩溃怎么办？
+
+**症状**：预训练后初始分数 ~30K，RL 训练后迅速掉到负数。
+
+**根因**（已验证）：
+1. **奖励塑形惩罚过重**：`w_holes=1.5` 等惩罚权重导致 agent 学到"快速死亡"策略来规避惩罚
+2. **硬更新 + 大批量**：`use_hard_update=true` 配合 `batch_size=256`，在线网络快速漂移但 target 冻结 8000 步，Double DQN 无法纠正
+
+**修复步骤**（按优先级）：
+1. 将 `w_height/w_holes/w_bumpiness/w_well` 全部设为 0.0（诊断期排除奖励问题）
+2. 设 `use_hard_update: false`（Polyak 软更新, τ=0.005）
+3. 降低学习率到 `2.5e-5`，降低 `sigma_init` 到 `0.01`
+4. 确认 `batch_size=256` 配合以上参数稳定后，再逐步恢复惩罚权重
 
 ### Q: 训练意外中断后如何恢复？
 ```bash
@@ -1142,6 +1174,33 @@ pytest tests/ -v
 4. **RNG 不一致**：C++ 和 Python 环境使用不同随机数生成器（`mt19937_64` vs `numpy.random`），相同种子不产生相同对局
 5. **根目录 `test_env.py`** 是 `tests/test_env.py` 的历史副本，建议手动删除
 
+### Q: 如何使用内置的 Dellacherie AI（无需 ONNX 模型）？
+
+在 `code.html` 中点击 **"DL"** 按钮即可切换到 Dellacherie 启发式 AI。无需加载 ONNX 模型文件，直接在浏览器内运行六特征评估算法。
+
+特性：
+- 零依赖：纯 JavaScript 实现，无需 GPU/ONNX Runtime
+- 消融实验：通过 `agent/dellacherie.py` 的 `DellacherieConfig` 可单独启用/禁用每个特征
+- 训练对比：训练过程中自动运行 Dellacherie 基准评估（每 50K 步），与学习策略对比
+
+### Q: 如何复用预训练样本？
+
+首次训练后，样本自动保存到 `pretrain_samples/samples_latest.npz`，BC 权重保存到 `pretrained_weights.pt`。
+
+下次训练时自动跳过收集和 BC 训练，直接加载缓存权重（毫秒级）：
+
+```bash
+python scripts/train.py --device cuda --envs 64  # 自动检测并加载缓存
+```
+
+三级缓存加速：
+
+```
+pretrained_weights.pt 存在? → torch.load() → 跳过一切（毫秒）
+samples_latest.npz 存在?   → 加载样本 → BC 训练 → 保存权重（~1分钟）
+都不存在                    → 收集 + 训练 + 缓存（~80分钟）
+```
+
 ### Q: C++ 模块编译失败？
 ```bash
 # 确认安装了 pybind11
@@ -1161,7 +1220,85 @@ cmake --build . --target tetris_core --config Release --verbose
 
 ---
 
-## 十、参考
+## 十、下一轮训练注意事项
+
+### 10.1 当前诊断配置状态
+
+以下为当前生效的关键参数（`configs/training/dqn_rainbow.yaml`）：
+
+```yaml
+training:
+  total_samples: 1_000_000_000   # → 约 15.6M env steps
+dqn:
+  lr: 2.5e-5                     # 保守学习率
+  batch_size: 256                # 大批量（8× 旧值）
+  use_hard_update: false         # Polyak 软更新（关键！）
+  target_update_tau: 0.005
+network:
+  sigma_init: 0.01               # 保守噪声
+env:
+  reward_weights:
+    w_height: 0.0                # 诊断期归零
+    w_holes: 0.0
+    w_bumpiness: 0.0
+    w_well: 0.0
+    w_survival: 0.01             # 保留
+    w_death: -100.0              # 保留
+```
+
+### 10.2 训练启动
+
+```bash
+# 默认配置（推荐）
+python scripts/train.py --device cuda --envs 64
+
+# 快速验证（1000 步，约 3 分钟）
+python scripts/train.py --device cuda --envs 64 --steps 1000
+
+# 指定样本数
+python scripts/train.py --device cuda --envs 64 --samples 500000000
+
+# 启用性能分析
+python scripts/train.py --device cuda --envs 64 --profile
+```
+
+### 10.3 观察指标
+
+| 指标 | 健康信号 | 警告信号 |
+|------|---------|---------|
+| **Avg100R** | 正数且稳定/上升 | 持续下降，特别是掉到负数 |
+| **初始评估分** | ≥30,000（预训练基线） | <5,000（预训练权重未加载） |
+| **FPS** | ≥300 | <100（性能瓶颈） |
+| **checkpoint Δ score** | 正值或小幅波动 | 持续大幅负值 |
+| **Dellacherie 对比** | agent 分数接近或超过 DL | agent 分数远低于 DL |
+
+### 10.4 恢复惩罚权重（收敛后）
+
+当训练分数稳定后，逐步恢复惩罚权重：
+
+```yaml
+# 阶段 1：诊断（当前）— 分数 ≥30K 且稳定
+w_height: 0.0, w_holes: 0.0, w_bumpiness: 0.0, w_well: 0.0
+
+# 阶段 2：轻度惩罚 — 分数持续上升
+w_height: 0.05, w_holes: 0.3, w_bumpiness: 0.05, w_well: 0.1
+
+# 阶段 3：标准惩罚 — 分数达到 100K+
+w_height: 0.1, w_holes: 0.5, w_bumpiness: 0.1, w_well: 0.2
+```
+
+切勿直接跳回旧权重（0.3/1.5/0.2/0.5），那会导致灾难性遗忘重现。
+
+### 10.5 常见陷阱
+
+1. **`--no-pretrain` 会跳过缓存权重加载**：快速路径代码在 `_pretrain()` 内部，该 flag 会跳过整个方法
+2. **旧 checkpoint 含崩溃权重**：删除 `checkpoints/` 目录重新训练
+3. **C++ env 未编译**：如果 `use_cpp_env: true` 但 `.pyd` 不在 `env/bindings/`，会回退到纯 Python env（慢 3-5x）
+4. **旧 `total_steps` 思维**：配置改为 `total_samples`，旧 YAML 中的 `total_steps` 会被忽略（除非 CLI `--steps` 覆盖）
+
+---
+
+## 十一、参考
 
 | 论文 | 内容 |
 |------|------|

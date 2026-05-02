@@ -137,6 +137,42 @@ class PPO:
         return int(action.item()), float(dist.log_prob(action).item()), float(value.squeeze().item())
 
     @torch.no_grad()
+    def select_actions_batch(self,
+                              boards: np.ndarray,      # (N, 1, 22, 10)
+                              features: np.ndarray,    # (N, 53)
+                              legal_actions_list: List[List],
+                              deterministic: bool = False
+                              ) -> List[Tuple[int, float, float]]:
+        """Select actions for N envs in a single GPU forward pass.
+
+        Returns [(action_idx, log_prob, value), ...] — one per env.
+        """
+        mask_list = [
+            create_action_mask(la, self.num_actions, self.device)
+            if la else torch.zeros(self.num_actions, dtype=torch.bool, device=self.device)
+            for la in legal_actions_list
+        ]
+        masks = torch.stack(mask_list)  # (N, 112)
+
+        board_t = torch.as_tensor(boards, dtype=torch.float32, device=self.device)
+        feat_t = torch.as_tensor(features, dtype=torch.float32, device=self.device)
+
+        logits, values = self.network(board_t, feat_t)       # (N, 112), (N, 1)
+        masked_logits = mask_logits(logits, masks, -1e9)
+        values_squeezed = values.squeeze(-1)                  # (N,)
+
+        if deterministic:
+            actions = masked_logits.argmax(dim=-1)
+            log_probs = torch.zeros(actions.shape, device=self.device)
+        else:
+            dist = torch.distributions.Categorical(logits=masked_logits)
+            actions = dist.sample()
+            log_probs = dist.log_prob(actions)
+
+        return [(int(a.item()), float(lp.item()), float(v.item()))
+                for a, lp, v in zip(actions, log_probs, values_squeezed)]
+
+    @torch.no_grad()
     def get_value(self, board: np.ndarray, features: np.ndarray) -> float:
         board_t = torch.as_tensor(board, dtype=torch.float32, device=self.device).unsqueeze(0)
         feat_t = torch.as_tensor(features, dtype=torch.float32, device=self.device).unsqueeze(0)

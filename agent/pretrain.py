@@ -11,8 +11,13 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from typing import List, Tuple, Optional
 
+import os
+import json
+import hashlib
+
 from .model import DuelingDQN, ActorCritic
 from .action_mask import create_action_mask, encode_action
+from .dellacherie import DellacherieAgent, DellacherieConfig, DEFAULT_WEIGHTS
 from env.tetris_env import Action
 
 # Dellacherie weights (from particle swarm optimisation).
@@ -179,13 +184,22 @@ class DellacherieExpert:
 
 
 class Pretrainer:
-    """Trains a network to mimic Dellacherie via behavior cloning."""
+    """Trains a network to mimic Dellacherie via behavior cloning.
+
+    Supports:
+      - Ablation experiments via DellacherieConfig
+      - Saving/loading collected samples to/from disk
+      - Dellacherie score/value per transition for later comparison
+    """
 
     def __init__(self, model_type: str = "dqn", num_actions: int = 112,
-                 feature_dim: int = 53, lr: float = 1e-3, device: str = "cuda"):
+                 feature_dim: int = 53, lr: float = 1e-3, device: str = "cuda",
+                 dellacherie_config: DellacherieConfig = None,
+                 sample_dir: str = "pretrain_samples"):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.num_actions = num_actions
         self.model_type = model_type
+        self.sample_dir = sample_dir
 
         if model_type == "dqn":
             self.model = DuelingDQN(num_actions=num_actions, feature_dim=feature_dim,
@@ -194,54 +208,149 @@ class Pretrainer:
             self.model = ActorCritic(num_actions=num_actions, feature_dim=feature_dim).to(self.device)
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        self.expert = DellacherieExpert()
+        self.expert = DellacherieAgent(dellacherie_config)
 
-    def collect_dataset(self, env, num_episodes: int = 1000
-                        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Run Dellacherie expert to collect (state, action) pairs."""
+    def collect_dataset(self, env_creator, num_episodes: int = 1000,
+                         num_envs: int = 16
+                        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
+                                   np.ndarray, Dict]:
+        """Run Dellacherie expert across N parallel envs to collect (state, action) pairs.
+
+        Returns:
+            boards, features, actions, dellacherie_scores, metadata
+        """
         boards_list, features_list, actions_list = [], [], []
+        scores_list = []
+        episode_scores = []
+        episode_lines = []
 
-        for ep in range(num_episodes):
-            obs = env.reset()
-            board_np = obs[0]
-            feat_np = obs[1]
-            done = False
+        envs = [env_creator() for _ in range(num_envs)]
+        obs_list = [env.reset() for env in envs]
+        total_completed = 0
+        last_report = 0
 
-            while not done:
-                legal = env.get_legal_actions()
-                if not legal:
+        while total_completed < num_episodes:
+            for i in range(num_envs):
+                if total_completed >= num_episodes:
                     break
 
-                # Expert action.
-                rot, col, hold = self.expert.select_action(
-                    board_np[0].astype(bool), legal, env._current_piece_name_idx, None
+                obs_tuple = obs_list[i]
+                board_np, feat_np = obs_tuple[0], obs_tuple[1]
+                legal = envs[i].get_legal_actions()
+
+                if not legal:
+                    obs_list[i] = envs[i].reset()
+                    total_completed += 1
+                    continue
+
+                # Expert action with Dellacherie score.
+                rot, col, hold, score, features = self.expert.select_action(
+                    board_np[0].astype(bool), legal, envs[i]._current_piece_name_idx
                 )
                 action_idx = encode_action(rot, col, hold)
 
                 boards_list.append(board_np.copy())
                 features_list.append(feat_np.copy())
                 actions_list.append(action_idx)
+                scores_list.append(score)
 
-                # Step environment.
-                obs, _, terminated, truncated, _ = env.step(Action(rot, col, hold))
-                board_np, feat_np = obs[0], obs[1]
-                done = terminated or truncated
+                next_obs, reward, terminated, truncated, info = envs[i].step(Action(rot, col, hold))
+                obs_list[i] = next_obs
+                if terminated or truncated:
+                    episode_scores.append(info.get("score", 0))
+                    episode_lines.append(info.get("lines", 0))
+                    total_completed += 1
+                    obs_list[i] = envs[i].reset()
 
-            if (ep + 1) % 100 == 0:
-                print(f"  Collected {ep + 1}/{num_episodes} episodes, {len(actions_list)} transitions")
+            if total_completed - last_report >= 100:
+                last_report = total_completed
+                print(f"  Collected {total_completed}/{num_episodes} episodes, "
+                      f"{len(actions_list):,} transitions")
 
-        # Each board_np is (1, 22, 10) from state encoder — stack to (N, 22, 10).
-        boards = np.concatenate([b for b in boards_list]) if len(boards_list) > 0 else np.array([])
-        # Add channel dimension: (N, 22, 10) → (N, 1, 22, 10) for CNN NCHW.
+        print(f"  Collected {total_completed}/{num_episodes} episodes, "
+              f"{len(actions_list):,} transitions")
+
+        # Stack tensors.
+        boards = np.concatenate(boards_list) if boards_list else np.array([])
         if len(boards) > 0 and boards.ndim == 3:
             boards = boards[:, np.newaxis, :, :]
         features = np.stack(features_list) if features_list else np.array([])
         actions = np.array(actions_list, dtype=np.int64)
-        return boards, features, actions
+        scores = np.array(scores_list, dtype=np.float32)
+
+        # Build metadata.
+        metadata = {
+            "num_episodes": total_completed,
+            "num_transitions": len(actions_list),
+            "dellacherie_score_mean": float(np.mean(scores)) if len(scores) > 0 else 0.0,
+            "dellacherie_score_std": float(np.std(scores)) if len(scores) > 0 else 0.0,
+            "episode_score_mean": float(np.mean(episode_scores)) if episode_scores else 0.0,
+            "episode_score_max": int(np.max(episode_scores)) if episode_scores else 0,
+            "episode_lines_mean": float(np.mean(episode_lines)) if episode_lines else 0.0,
+            "active_features": self.expert.active_features,
+            "weights": dict(self.expert.weights),
+        }
+        return boards, features, actions, scores, metadata
+
+    # ------------------------------------------------------------------ #
+    #  Save / Load samples
+    # ------------------------------------------------------------------ #
+    def save_samples(self, boards: np.ndarray, features: np.ndarray,
+                     actions: np.ndarray, scores: np.ndarray,
+                     metadata: Dict, tag: str = "latest") -> str:
+        """Persist collected samples to disk. Returns the save path."""
+        os.makedirs(self.sample_dir, exist_ok=True)
+        base = os.path.join(self.sample_dir, f"samples_{tag}")
+        np.savez_compressed(
+            base + ".npz",
+            boards=boards, features=features, actions=actions, scores=scores,
+        )
+        with open(base + ".json", "w") as f:
+            json.dump(metadata, f, indent=2)
+        print(f"[Pretrain] Saved {metadata['num_transitions']:,} transitions to {base}.npz")
+        return base + ".npz"
+
+    def load_samples(self, tag: str = "latest"
+                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
+                                np.ndarray, Dict]:
+        """Load previously saved pretrain samples. Returns (boards, features, actions, scores, metadata)."""
+        base = os.path.join(self.sample_dir, f"samples_{tag}")
+        data = np.load(base + ".npz")
+        with open(base + ".json") as f:
+            metadata = json.load(f)
+        print(f"[Pretrain] Loaded {metadata['num_transitions']:,} transitions from {base}.npz")
+        return (data["boards"], data["features"], data["actions"],
+                data["scores"], metadata)
+
+    def load_partial_samples(self, tag: str = "latest", max_transitions: int = None
+                             ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
+                                        np.ndarray, Dict]:
+        """Load a subset of saved samples (useful for ablation with varied data sizes)."""
+        boards, features, actions, scores, metadata = self.load_samples(tag)
+        if max_transitions and max_transitions < len(actions):
+            idx = np.random.choice(len(actions), max_transitions, replace=False)
+            boards = boards
+            features = features[idx]
+            actions = actions[idx]
+            scores = scores[idx]
+            metadata["num_transitions"] = max_transitions
+            metadata["partial"] = True
+        return boards, features, actions, scores, metadata
+
+    def _hash_config(self) -> str:
+        """Short hash of the Dellacherie config for sample provenance."""
+        raw = json.dumps({"weights": dict(self.expert.weights),
+                          "active": self.expert.active_features}, sort_keys=True)
+        return hashlib.md5(raw.encode()).hexdigest()[:8]
 
     def train(self, boards: np.ndarray, features: np.ndarray, actions: np.ndarray,
-              epochs: int = 50, batch_size: int = 256):
-        """Behavior cloning: supervised learning on expert data."""
+              epochs: int = 50, batch_size: int = 256,
+              scores: np.ndarray = None):
+        """Behavior cloning: supervised learning on expert data.
+
+        When *scores* is provided, transitions with higher Dellacherie
+        scores receive higher sampling weight (optional).
+        """
         if len(boards) == 0:
             return
 
@@ -250,7 +359,20 @@ class Pretrainer:
             torch.as_tensor(features, dtype=torch.float32),
             torch.as_tensor(actions, dtype=torch.long),
         )
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+        if scores is not None and len(scores) > 0:
+            s_min, s_max = scores.min(), scores.max()
+            if s_max > s_min:
+                sample_weights = 0.1 + 0.9 * (scores - s_min) / (s_max - s_min)
+            else:
+                sample_weights = np.ones_like(scores)
+            sampler = torch.utils.data.WeightedRandomSampler(
+                torch.as_tensor(sample_weights, dtype=torch.float32),
+                num_samples=len(sample_weights), replacement=True,
+            )
+            loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
+        else:
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         self.model.train()
         for epoch in range(epochs):

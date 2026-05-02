@@ -370,6 +370,7 @@
       <div id="browserProbeResult" style="display:none;font-size:9px;color:rgba(255,255,255,0.55);line-height:1.6;text-align:left;"></div>
       <div class="ai-mode-bar">
         <button class="ai-mode-btn active" data-mode="off" onclick="setAIMode('off')">手动</button>
+        <button class="ai-mode-btn" data-mode="dellacherie" onclick="setAIMode('dellacherie')">DL</button>
         <button class="ai-mode-btn" data-mode="auto" onclick="setAIMode('auto')">AI 自动</button>
         <button class="ai-mode-btn" data-mode="suggest" onclick="setAIMode('suggest')">AI 建议</button>
       </div>
@@ -1292,7 +1293,7 @@ canvas.addEventListener('touchstart', (e) => {
 });
 
 // ==================== AI AGENT ====================
-const AI = { OFF: 'off', AUTO: 'auto', SUGGEST: 'suggest' };
+const AI = { OFF: 'off', AUTO: 'auto', SUGGEST: 'suggest', DELLACHERIE: 'dellacherie' };
 let aiMode = AI.OFF;
 let aiSession = null;
 let aiModelLoaded = false;
@@ -1474,7 +1475,9 @@ function getAILegalActions() {
 
 // --- AI Inference & Decision ---
 async function aiDecide() {
-  if (!aiModelLoaded || !aiSession || !currentPiece || aiPendingAsync) return;
+  if (!currentPiece || aiPendingAsync) return;
+  if (aiMode === AI.DELLACHERIE) { aiDecideDellacherie(); return; }
+  if (!aiModelLoaded || !aiSession) return;
   aiNeedsDecision = false;
   aiPendingAsync = true;
 
@@ -1511,6 +1514,167 @@ async function aiDecide() {
     drawAIHeatmap(qv, legal);
   } catch (e) {
     console.error('[AI] Inference error:', e);
+  }
+  aiPendingAsync = false;
+}
+
+// --- Dellacherie Heuristic AI (no model required) ---
+const DL_W = {
+  landing_height: -4.500,
+  cleared_lines:   3.418,
+  holes:          -7.899,
+  bumpiness:      -3.386,
+  max_well:       -3.129,
+  row_transitions:-2.000
+};
+
+function dlColumnHeights(board) {
+  const h = new Array(COLS).fill(0);
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < TOTAL_ROWS; r++) {
+      if (board[r][c]) { h[c] = TOTAL_ROWS - r; break; }
+    }
+  }
+  return h;
+}
+
+function dlCountHoles(board) {
+  let holes = 0;
+  for (let c = 0; c < COLS; c++) {
+    let found = false;
+    for (let r = 0; r < TOTAL_ROWS; r++) {
+      if (board[r][c]) found = true;
+      else if (found) holes++;
+    }
+  }
+  return holes;
+}
+
+function dlBumpiness(heights) {
+  let b = 0;
+  for (let c = 0; c < COLS - 1; c++) b += Math.abs(heights[c] - heights[c + 1]);
+  return b;
+}
+
+function dlMaxWell(heights) {
+  let w = 0;
+  for (let c = 0; c < COLS; c++) {
+    const ld = c > 0 ? heights[c - 1] - heights[c] : 0;
+    const rd = c < COLS - 1 ? heights[c + 1] - heights[c] : 0;
+    w = Math.max(w, Math.max(0, Math.min(ld, rd)));
+  }
+  return w;
+}
+
+function dlRowTransitions(board) {
+  let t = 0;
+  for (let r = 0; r < TOTAL_ROWS; r++) {
+    for (let c = 0; c <= COLS; c++) {
+      const left = c > 0 ? board[r][c - 1] : false;
+      const right = c < COLS ? board[r][c] : false;
+      if (left !== right) t++;
+    }
+  }
+  return t;
+}
+
+function dlClearLines(boardCopy) {
+  let cleared = 0;
+  for (let r = TOTAL_ROWS - 1; r >= 0; r--) {
+    if (boardCopy[r].every(v => v)) {
+      for (let rr = r; rr > 0; rr--) boardCopy[rr] = [...boardCopy[rr - 1]];
+      boardCopy[0] = new Array(COLS).fill(false);
+      cleared++;
+      r++; // re-check same row
+    }
+  }
+  return cleared;
+}
+
+function dlEvaluatePlacement(board, pieceName, rotation, column) {
+  const cells = SHAPES[pieceName][rotation];
+  // Ghost drop.
+  let gy = HIDDEN_ROWS - 2;
+  while (!aiCollides(cells, column, gy + 1)) gy++;
+  if (aiCollides(cells, column, gy)) return null;
+
+  // Simulate board.
+  const sim = board.map(r => [...r]);
+  for (const [cx, cy] of cells) {
+    const r = gy + cy, c = column + cx;
+    if (r >= 0 && r < TOTAL_ROWS && c >= 0 && c < COLS) sim[r][c] = true;
+  }
+
+  const cleared = dlClearLines(sim);
+  const h = dlColumnHeights(sim);
+
+  const feats = {
+    landing_height:  h.reduce((a, b) => a + b, 0),
+    cleared_lines:   cleared,
+    holes:           dlCountHoles(sim),
+    bumpiness:       dlBumpiness(h),
+    max_well:        dlMaxWell(h),
+    row_transitions: dlRowTransitions(sim),
+  };
+
+  let score = 0;
+  for (const k in DL_W) score += DL_W[k] * feats[k];
+  feats.score = score;
+  return feats;
+}
+
+function aiDecideDellacherie() {
+  if (!currentPiece || aiPendingAsync) return;
+  aiNeedsDecision = false;
+  aiPendingAsync = true;
+
+  const t0 = performance.now();
+  try {
+    const legal = getAILegalActions();
+    aiLastLegalActions = legal;
+    if (legal.length === 0) { aiPendingAsync = false; return; }
+
+    // Evaluate all legal placements with Dellacherie heuristic.
+    const scored = [];
+    for (const a of legal) {
+      const name = a.hold && canHold && holdPiece !== null && holdPiece !== undefined
+        ? holdPiece : currentPiece.name;
+      const feat = dlEvaluatePlacement(board, name, a.rotation, a.col);
+      if (feat) scored.push({ ...a, q: feat.score, features: feat });
+    }
+    scored.sort((a, b) => b.q - a.q);
+
+    const best = scored[0];
+    aiInferenceTime = performance.now() - t0;
+    // Synthesise q-values array (just set legal action scores, -1e9 for illegal).
+    const qv = new Float32Array(112).fill(-1e9);
+    for (const a of scored) {
+      qv[encodeAction(a.rotation, a.col, a.hold)] = a.q;
+    }
+    aiLastQValues = qv;
+
+    aiPlan = buildPlan({ rotation: best.rotation, col: best.col, hold: best.hold });
+    aiPlanTimer = 0;
+
+    updateAIPanel({ rotation: best.rotation, col: best.col, hold: best.hold },
+                  best.q, qv, legal);
+    drawAIHeatmap(qv, legal);
+
+    // Show Dellacherie feature breakdown in panel.
+    if (best.features) {
+      const top3 = document.getElementById('aiTop3');
+      if (top3) {
+        top3.innerHTML = scored.slice(0, 3).map((a, i) =>
+          '<div class="ai-top-item">' +
+            '<span class="ai-rank">#' + (i + 1) + '</span>' +
+            'R' + a.rotation + ' C' + a.col + (a.hold ? ' H' : '') +
+            '<span class="ai-q">' + a.q.toFixed(2) + '</span>' +
+          '</div>'
+        ).join('');
+      }
+    }
+  } catch (e) {
+    console.error('[Dellacherie] Error:', e);
   }
   aiPendingAsync = false;
 }
@@ -1684,8 +1848,11 @@ function setAIMode(mode) {
   const panel = document.getElementById('aiDecisionPanel');
   if (panel) panel.style.display = mode !== AI.OFF ? 'block' : 'none';
 
-  // If switching to auto and game is running, trigger decision.
-  if (mode === AI.AUTO && gameState === 'playing' && currentPiece) {
+  // Trigger decision for auto modes.
+  if ((mode === AI.AUTO || mode === AI.DELLACHERIE) && gameState === 'playing' && currentPiece) {
+    aiNeedsDecision = true;
+  }
+  if (mode === AI.SUGGEST && gameState === 'playing' && currentPiece) {
     aiNeedsDecision = true;
   }
 
@@ -1695,7 +1862,10 @@ function setAIMode(mode) {
 function updateAIStatus() {
   const el = document.getElementById('aiStatus');
   if (!el) return;
-  if (!aiModelLoaded) {
+  if (aiMode === AI.DELLACHERIE) {
+    el.textContent = 'Dellacherie ✓ (built-in)';
+    el.style.color = '#f90';
+  } else if (!aiModelLoaded) {
     el.textContent = aiModelLoading ? 'Loading model...' : 'No model loaded';
     el.style.color = '#f55';
   } else if (aiMode === AI.AUTO) {

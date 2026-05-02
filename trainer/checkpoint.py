@@ -8,11 +8,17 @@ from datetime import datetime
 
 
 class CheckpointManager:
-    """Manages saving/loading of training checkpoints."""
+    """Manages saving/loading of training checkpoints.
+
+    Cleanup policy: retains the *best* checkpoint (by evaluation score)
+    plus the *keep* most-recent periodic checkpoints.  Older checkpoints
+    are deleted automatically.
+    """
 
     def __init__(self, checkpoint_dir: str = "checkpoints", keep: int = 10):
         self.checkpoint_dir = checkpoint_dir
         self.keep = keep
+        self._best_path: Optional[str] = None
         os.makedirs(checkpoint_dir, exist_ok=True)
 
     def save(self, step: int, model: torch.nn.Module,
@@ -141,13 +147,24 @@ class CheckpointManager:
         files.sort(key=lambda f: int(os.path.splitext(os.path.basename(f))[0].split("_")[1]))
         return files[-1]
 
+    def mark_best(self, step: int):
+        """Protect the checkpoint at *step* from automatic cleanup."""
+        self._best_path = os.path.join(self.checkpoint_dir, f"step_{step:09d}.pt")
+
     def _cleanup(self):
-        """Keep only the most recent `keep` checkpoints."""
+        """Keep best checkpoint + most recent ``keep`` periodic checkpoints."""
         pattern = os.path.join(self.checkpoint_dir, "step_*.pt")
         files = [f for f in glob.glob(pattern) if "_buffer" not in f]
         files.sort(key=lambda f: int(os.path.splitext(os.path.basename(f))[0].split("_")[1]))
-        for f in files[:-self.keep]:
-            os.remove(f)
-            buf = f.replace(".pt", "_buffer.pt")
-            if os.path.exists(buf):
-                os.remove(buf)
+
+        # Protected set: best checkpoint is never deleted.
+        protected = {self._best_path} if self._best_path and os.path.exists(self._best_path) else set()
+        recent = set(files[-self.keep:])
+        protected |= recent
+
+        for f in files:
+            if f not in protected:
+                os.remove(f)
+                buf = f.replace(".pt", "_buffer.pt")
+                if os.path.exists(buf):
+                    os.remove(buf)

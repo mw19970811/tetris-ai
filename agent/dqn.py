@@ -22,7 +22,7 @@ from copy import deepcopy
 from .model import DuelingDQN
 from .memory import PrioritizedReplayBuffer, UniformReplayBuffer
 from .nstep_buffer import NStepBuffer
-from .action_mask import create_action_mask, mask_logits
+from .action_mask import create_action_mask, mask_logits, encode_action, decode_action
 
 
 class RainbowDQN:
@@ -91,18 +91,12 @@ class RainbowDQN:
     def select_action(self, board: np.ndarray, features: np.ndarray,
                       legal_actions: List, env_id: int = 0,
                       deterministic: bool = False) -> Tuple[int, int, int, bool]:
-        """Select action using current online network.
+        """Select action using current online network (single env, B=1).
 
         Returns (rotation, column, hold, action_idx).
-
-        With NoisyNets: exploration emerges from weight noise.
-        Without NoisyNets: use epsilon-greedy fallback.
+        Prefer ``select_actions_batch`` for multi-env setups.
         """
-        from .action_mask import encode_action, decode_action
-
-        # Build action mask.
         mask = create_action_mask(legal_actions, self.num_actions, self.device)
-
         if not mask.any():
             return 0, 0, False, 0
 
@@ -115,6 +109,42 @@ class RainbowDQN:
         action_idx = int(masked_q.argmax().item())
         rotation, col, hold = decode_action(action_idx)
         return rotation, col, hold, action_idx
+
+    @torch.no_grad()
+    def select_actions_batch(self,
+                              boards: np.ndarray,      # (N, 1, 22, 10)
+                              features: np.ndarray,    # (N, 53)
+                              legal_actions_list: List[List]
+                              ) -> List[Tuple[int, int, int, int]]:
+        """Select actions for N envs in a single GPU forward pass.
+
+        Returns a list of (rotation, column, hold, action_idx) — one per env.
+
+        This is the performance-critical path for training: a single B=N
+        matmul replaces N serial B=1 kernel launches, eliminating
+        CPU↔GPU synchronisation overhead.
+        """
+        # Build mask tensor: (N, num_actions).
+        mask_list = [
+            create_action_mask(la, self.num_actions, self.device)
+            if la else torch.zeros(self.num_actions, dtype=torch.bool, device=self.device)
+            for la in legal_actions_list
+        ]
+        masks = torch.stack(mask_list)  # (N, 112)
+
+        board_t = torch.as_tensor(boards, dtype=torch.float32, device=self.device)
+        feat_t = torch.as_tensor(features, dtype=torch.float32, device=self.device)
+
+        q_values = self.online_net(board_t, feat_t)   # (N, 112)
+        masked_q = torch.where(masks, q_values, torch.full_like(q_values, -1e9))
+
+        action_indices = masked_q.argmax(dim=-1).tolist()
+
+        results = []
+        for idx in action_indices:
+            rot, col, hold = decode_action(int(idx))
+            results.append((rot, col, hold, int(idx)))
+        return results
 
     # ------------------------------------------------------------------ #
     #  Training

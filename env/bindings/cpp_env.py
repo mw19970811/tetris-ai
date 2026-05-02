@@ -52,8 +52,9 @@ class CppTetrisEnv:
                 )
         import sys
         _platform = "Windows" if sys.platform == "win32" else "Linux"
-        print(f"[CppTetrisEnv] tetris_core C++ module loaded successfully "
-              f"(platform: {_platform}, module: {tc.__name__})")
+        if (False):  # Placeholder for future platform-specific handling if needed
+            print(f"[CppTetrisEnv] tetris_core C++ module loaded successfully "
+                f"(platform: {_platform}, module: {tc.__name__})")
         cpp_cfg = tc.EnvConfig()
         cpp_cfg.cols = config.cols
         cpp_cfg.rows = config.rows

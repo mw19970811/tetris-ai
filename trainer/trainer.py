@@ -32,10 +32,11 @@ def _timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 from .config import TrainingConfig
-from .logger import Logger
+from .logger import Logger, TeeLogger
 from .checkpoint import CheckpointManager
 from .evaluator import Evaluator
 from .profiler import TrainingProfiler
+from agent.dellacherie import DellacherieAgent
 
 
 class Trainer:
@@ -82,6 +83,7 @@ class Trainer:
         self.episode_rewards = deque(maxlen=100)
         self.episode_lines = deque(maxlen=100)
         self.best_avg_score = 0.0
+        self._last_ckpt_metrics: Dict = {}  # Previous checkpoint's eval for delta comparison
 
         # Resume state.
         self.resume_step = 0
@@ -232,12 +234,18 @@ class Trainer:
         total_steps = total_steps or self.cfg.total_steps
         start_step = self.resume_step
 
+        # Tee stdout to log file.
+        tee = TeeLogger(self.cfg.log_dir)
+        print(f"[{_timestamp()}] Log file: {tee.path}")
+
         if start_step > 0:
-            print(f"[Trainer] Resuming training: step {start_step:,} → {total_steps:,}, "
-                  f"algorithm={self.cfg.algorithm}, envs={self.num_envs}")
+            print(f"[Trainer] Resuming: step {start_step:,} → {total_steps:,}  "
+                  f"({self.cfg.total_samples:,} samples)  "
+                  f"algorithm={self.cfg.algorithm}  envs={self.num_envs}")
         else:
-            print(f"[Trainer] Starting training: {total_steps:,} steps, "
-                  f"algorithm={self.cfg.algorithm}, envs={self.num_envs}")
+            print(f"[Trainer] Starting: {total_steps:,} env steps "
+                  f"({self.cfg.total_samples:,} training samples)  "
+                  f"algorithm={self.cfg.algorithm}  envs={self.num_envs}")
 
         # Pretraining: skip if resuming (weights already loaded).
         if start_step == 0 and self.cfg.use_pretrain and self.cfg.algorithm == "dqn":
@@ -256,54 +264,73 @@ class Trainer:
         episode_steps = [0] * self.num_envs
 
         for step in range(start_step, total_steps):
-            # Collect experience for each env.
+            # === Phase 1: Collect states + legal actions for all envs ===
+            boards_list = []
+            features_list = []
+            legal_list = []
+
+            for env_id in range(self.num_envs):
+                board, features = self.obs[env_id][0], self.obs[env_id][1]
+
+                with self.profiler.phase("legal_actions"):
+                    legal = self.envs[env_id].get_legal_actions()
+
+                if not legal:
+                    with self.profiler.phase("env_reset"):
+                        self.obs[env_id] = self.envs[env_id].reset()
+                    episode_rewards[env_id] = 0.0
+                    episode_steps[env_id] = 0
+                    board, features = self.obs[env_id]
+                    with self.profiler.phase("legal_actions"):
+                        legal = self.envs[env_id].get_legal_actions()
+
+                boards_list.append(board)
+                features_list.append(features)
+                legal_list.append(legal)
+
+            stacked_boards = np.array(boards_list)      # (N, 1, 22, 10)
+            stacked_features = np.array(features_list)  # (N, 53)
+
+            # === Phase 2: Single batched GPU forward ===
+            with self.profiler.phase("action_select"):
+                if self.cfg.algorithm == "dqn":
+                    batched_actions = self.agent.select_actions_batch(
+                        stacked_boards, stacked_features, legal_list
+                    )
+                    # [(rot, col, hold, action_idx), ...]
+                else:
+                    batched_actions = self.agent.select_actions_batch(
+                        stacked_boards, stacked_features, legal_list
+                    )
+                    # [(action_idx, log_prob, value), ...]
+
+            # === Phase 3: Step + observe for all envs ===
             for env_id in range(self.num_envs):
                 env = self.envs[env_id]
                 board, features = self.obs[env_id][0], self.obs[env_id][1]
 
-                with self.profiler.phase("legal_actions"):
-                    legal_actions = env.get_legal_actions()
+                if self.cfg.algorithm == "dqn":
+                    rot, col, hold, action_idx = batched_actions[env_id]
+                    action = Action(rot, col, hold)
+                else:
+                    action_idx, log_prob, value = batched_actions[env_id]
+                    rot, col, hold = decode_action(action_idx)
+                    action = Action(rot, col, hold)
 
-                if not legal_actions:
-                    with self.profiler.phase("env_reset"):
-                        self.obs[env_id] = env.reset()
-                    episode_rewards[env_id] = 0.0
-                    episode_steps[env_id] = 0
-                    continue
-
-                # Select action.
-                with self.profiler.phase("action_select"):
-                    if self.cfg.algorithm == "dqn":
-                        rot, col, hold, action_idx = self.agent.select_action(
-                            board, features, legal_actions, env_id
-                        )
-                        action = Action(rot, col, hold)
-                    else:
-                        action_idx, log_prob, value = self.agent.select_action(
-                            board, features, legal_actions, env_id
-                        )
-                        rot, col, hold = decode_action(action_idx)
-                        action = Action(rot, col, hold)
-
-                # Step environment.
                 with self.profiler.phase("env_step"):
                     obs, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
-                next_board, next_features = obs[0], obs[1]
 
                 episode_rewards[env_id] += reward
                 episode_steps[env_id] += 1
 
-                # Store experience (tuples avoid dict allocation overhead).
-                state_tuple = (board, features)
-                next_state_tuple = (next_board, next_features)
-
                 with self.profiler.phase("agent_observe"):
                     if self.cfg.algorithm == "dqn":
-                        self.agent.observe(env_id, state_tuple, action_idx,
-                                           reward, next_state_tuple, done)
+                        self.agent.observe(
+                            env_id, (board, features), action_idx,
+                            reward, (obs[0], obs[1]), done
+                        )
                     else:
-                        # PPO: store in rollout buffer.
                         mask = env.get_legal_actions_mask(self.cfg.network.num_actions)
                         self.agent.buffer.add(
                             board, features, action_idx, log_prob, value,
@@ -312,14 +339,11 @@ class Trainer:
 
                 self.obs[env_id] = obs
 
-                # On episode end.
                 if done:
                     self.episode_rewards.append(episode_rewards[env_id])
                     self.episode_lines.append(info.get("lines", 0))
                     episode_rewards[env_id] = 0.0
                     episode_steps[env_id] = 0
-
-                    # Reset environment.
                     with self.profiler.phase("env_reset"):
                         self.obs[env_id] = env.reset()
 
@@ -331,7 +355,6 @@ class Trainer:
                         if metrics and self.agent.train_step % self.cfg.log_every == 0:
                             self.logger.log_train(self.agent.env_step, **metrics)
                 else:
-                    # PPO: update after collecting full rollout.
                     if len(self.agent.buffer) >= self.cfg.ppo.rollout_steps:
                         metrics = self.agent.update()
                         if metrics:
@@ -360,6 +383,15 @@ class Trainer:
                 print()  # newline
                 eval_metrics = self.evaluator.evaluate()
                 self.logger.log_eval(step, **eval_metrics)
+
+                # Dellacherie comparison (lightweight: 10 episodes).
+                if step % (self.cfg.eval_every * 5) == 0 or step == self.cfg.eval_every:
+                    try:
+                        dl_metrics = self._eval_dellacherie(num_episodes=10)
+                        self.logger.log({f"dellacherie/{k}": v for k, v in dl_metrics.items()}, step)
+                    except Exception as e:
+                        print(f"  [Dellacherie comparison skipped: {e}]")
+
                 elapsed = time.time() - t_start
                 print(f"[{_timestamp()}]  "
                       f"[Eval  @ step {step:>9,}]  "
@@ -375,6 +407,7 @@ class Trainer:
                         step, self.agent,
                         replay_buffer=self.agent.memory if hasattr(self.agent, 'memory') else None
                     )
+                    self.checkpoint.mark_best(step)
 
             # Periodic checkpoint.
             if step % self.cfg.save_every == 0 and step > 0:
@@ -382,6 +415,33 @@ class Trainer:
                     step, self.agent,
                     replay_buffer=self.agent.memory if hasattr(self.agent, 'memory') else None
                 )
+                # Log delta vs previous checkpoint.
+                prev = self._last_ckpt_metrics
+                cur_eval = self.evaluator.evaluate()
+                self._last_ckpt_metrics = cur_eval
+                if prev:
+                    delta_score = cur_eval["avg_score"] - prev["avg_score"]
+                    delta_lines = cur_eval["avg_lines"] - prev["avg_lines"]
+                    print(f"[{_timestamp()}]  "
+                          f"[Ckpt @ step {step:>9,}]  "
+                          f"Δ score: {delta_score:+,.1f}  "
+                          f"Δ lines: {delta_lines:+,.1f}  "
+                          f"cur: {cur_eval['avg_score']:,.1f}  "
+                          f"prev: {prev['avg_score']:,.1f}")
+                    self.logger.log({"ckpt/delta_score": delta_score,
+                                     "ckpt/delta_lines": delta_lines,
+                                     "ckpt/score": cur_eval["avg_score"],
+                                     "ckpt/prev_score": prev["avg_score"]}, step)
+                else:
+                    self._last_ckpt_metrics = cur_eval
+                    print(f"[{_timestamp()}]  "
+                          f"[Ckpt @ step {step:>9,}]  "
+                          f"score: {cur_eval['avg_score']:,.1f}  "
+                          f"lines: {cur_eval['avg_lines']:.1f}  "
+                          f"max: {cur_eval['max_score']:,.0f}")
+                    self.logger.log({"ckpt/score": cur_eval["avg_score"],
+                                     "ckpt/max_score": cur_eval["max_score"],
+                                     "ckpt/lines": cur_eval["avg_lines"]}, step)
 
         # Final save.
         print("\n[Trainer] Saving final model...")
@@ -396,31 +456,64 @@ class Trainer:
               f"Total steps: {total_steps:,}  "
               f"Best avg score: {self.best_avg_score:,.1f}  "
               f"Duration: {_fmt_duration(total_elapsed)}")
+        tee.close()
 
     # ------------------------------------------------------------------ #
     #  Pretraining
     # ------------------------------------------------------------------ #
     def _pretrain(self):
-        """Pretrain using Dellacherie behavior cloning."""
-        print(f"[Pretrain] Collecting {self.cfg.num_pretrain_episodes} episodes from Dellacherie expert...")
+        """Pretrain using Dellacherie behavior cloning.
 
+        Fast path: if a previously saved pretrained weights file exists,
+        load it directly — no data collection, no BC training.
+        """
         from agent.pretrain import Pretrainer
+        import os as _os
+
+        weights_path = _os.path.join("pretrain_samples", "pretrained_weights.pt")
+
+        # --- Fast path: load cached pretrained weights ---
+        if _os.path.exists(weights_path):
+            print(f"[Pretrain] Loading cached pretrained weights from {weights_path} ...")
+            converted = torch.load(weights_path, map_location="cpu")
+            if self.cfg.algorithm == "dqn" and hasattr(self.agent, 'online_net'):
+                self.agent.online_net.load_state_dict(converted)
+                self.agent.target_net.load_state_dict(converted)
+            print("[Pretrain] Skipped data collection + BC training (cached weights loaded).")
+            return
+
+        # --- Full path: collect + train + cache ---
         pretrainer = Pretrainer(model_type="dqn", num_actions=self.cfg.network.num_actions,
                                 feature_dim=self.cfg.network.feature_dim, device=str(self.device))
 
-        env = self._make_env()
-        boards, features, actions = pretrainer.collect_dataset(env, self.cfg.num_pretrain_episodes)
+        tag = self.cfg.pretrain_sample_tag
+        sample_path = _os.path.join(pretrainer.sample_dir, f"samples_{tag}.npz")
 
-        print(f"[Pretrain] Collected {len(actions):,} transitions. Training BC...")
+        if _os.path.exists(sample_path):
+            print(f"[Pretrain] Loading existing samples from {sample_path} ...")
+            boards, features, actions, scores, meta = pretrainer.load_samples(tag)
+            print(f"[Pretrain] Loaded {meta['num_transitions']:,} transitions "
+                  f"(ep_score_mean={meta.get('episode_score_mean', 0):.0f}).")
+        else:
+            print(f"[Pretrain] No cached samples found ({sample_path}). "
+                  f"Collecting {self.cfg.num_pretrain_episodes} episodes from Dellacherie expert...")
+            pretrain_envs = min(self.cfg.num_pretrain_envs, self.cfg.num_pretrain_episodes)
+            boards, features, actions, scores, meta = pretrainer.collect_dataset(
+                self._make_env, self.cfg.num_pretrain_episodes, num_envs=pretrain_envs
+            )
+            pretrainer.save_samples(boards, features, actions, scores, meta)
+            print(f"[Pretrain] Dellacherie score stats — "
+                  f"mean={meta['dellacherie_score_mean']:.2f} "
+                  f"std={meta['dellacherie_score_std']:.2f}  "
+                  f"ep_score_mean={meta['episode_score_mean']:.0f}  "
+                  f"ep_score_max={meta['episode_score_max']}")
+
+        print(f"[Pretrain] Training BC on {len(actions):,} transitions...")
         state_dict = pretrainer.train(boards, features, actions,
-                                       epochs=self.cfg.pretrain_epochs)
+                                       epochs=self.cfg.pretrain_epochs, scores=scores)
 
         # Load pretrained weights into agent.
         if self.cfg.algorithm == "dqn" and hasattr(self.agent, 'online_net'):
-            # The pretrainer uses standard nn.Linear (use_noisy=False).
-            # The DQN agent uses NoisyLinear (use_noisy=True) for value_fc
-            # and advantage_fc. Only those layers need key conversion;
-            # CNN / MLP / fusion layers use standard Linear — pass through.
             noisy_prefixes = ('value_fc.', 'advantage_fc.')
             converted = {}
             sigma_init = self.cfg.network.sigma_init
@@ -437,7 +530,54 @@ class Trainer:
 
             self.agent.online_net.load_state_dict(converted)
             self.agent.target_net.load_state_dict(converted)
+
+            # Cache the converted weights so next run can skip everything.
+            _os.makedirs("pretrain_samples", exist_ok=True)
+            torch.save(converted, weights_path)
+            print(f"[Pretrain] Cached pretrained weights to {weights_path}.")
             print("[Pretrain] Loaded pretrained weights into online + target networks.")
+
+    # ------------------------------------------------------------------ #
+    #  Dellacherie Comparison
+    # ------------------------------------------------------------------ #
+    def _eval_dellacherie(self, num_episodes: int = 10) -> Dict:
+        """Run Dellacherie heuristic as a baseline for comparison.
+
+        Returns metrics that can be compared against the learned policy.
+        """
+        dl_agent = DellacherieAgent()
+        scores, lines_list, steps_list = [], [], []
+
+        for _ in range(num_episodes):
+            env = self._make_env()
+            obs = env.reset()
+            board_np = obs[0]
+            done = False
+
+            while not done:
+                legal = env.get_legal_actions()
+                if not legal:
+                    break
+                piece_idx = env._current_piece_name_idx
+                rot, col, hold, score, feat = dl_agent.select_action(
+                    board_np[0].astype(bool), legal, piece_idx
+                )
+                from env.tetris_env import Action
+                obs, _, terminated, truncated, info = env.step(Action(rot, col, hold))
+                board_np = obs[0]
+                done = terminated or truncated
+
+            scores.append(info.get("score", 0))
+            lines_list.append(info.get("lines", 0))
+            steps_list.append(info.get("steps", 0))
+
+        return {
+            "avg_score": float(np.mean(scores)),
+            "max_score": int(np.max(scores)),
+            "avg_lines": float(np.mean(lines_list)),
+            "avg_steps": float(np.mean(steps_list)),
+            "episodes": num_episodes,
+        }
 
 
 # ------------------------------------------------------------------ #
@@ -455,9 +595,20 @@ def create_trainer(config_dict: Optional[dict] = None) -> Trainer:
 def main():
     """CLI entry point for training."""
     import argparse
-    parser = argparse.ArgumentParser(description="Train Tetris RL Agent")
+    parser = argparse.ArgumentParser(
+        description="Train Tetris RL Agent",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  python scripts/train.py                                  # DQN, 1B samples
+  python scripts/train.py --samples 500000000              # 500M samples
+  python scripts/train.py --steps 10000000                 # Override: 10M env steps
+  python scripts/train.py --algo ppo --samples 2000000000  # PPO, 2B samples""")
     parser.add_argument("--algo", type=str, default="dqn", choices=["dqn", "ppo"])
-    parser.add_argument("--steps", type=int, default=50_000_000)
+    parser.add_argument("--samples", type=int, default=None,
+                        help="Total training samples consumed (DQN: transitions fed to optimizer. "
+                             "Derived total_steps = samples × train_every / batch_size)")
+    parser.add_argument("--steps", type=int, default=None,
+                        help="Override: set env steps directly (bypasses derived computation)")
     parser.add_argument("--envs", type=int, default=64)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=42)
@@ -474,7 +625,6 @@ def main():
 
     config = TrainingConfig(
         algorithm=args.algo,
-        total_steps=args.steps,
         num_envs=args.envs,
         device=args.device,
         seed=args.seed,
@@ -482,7 +632,15 @@ def main():
         use_pretrain=not args.no_pretrain,
         checkpoint_dir=args.checkpoint_dir,
     )
+    if args.samples is not None:
+        config.total_samples = args.samples
+    if args.steps is not None:
+        config.total_steps = args.steps
 
+    derived = config.total_steps
+    print(f"[Config] total_samples={config.total_samples:,}  "
+          f"batch_size={config.dqn.batch_size}  train_every={config.dqn.train_every}  "
+          f"→ total_steps={derived:,}")
     trainer = Trainer(config, resume=args.resume, resume_from=args.resume_from,
                      profile=args.profile)
     trainer.train()

@@ -14,8 +14,8 @@ class EnvConfig:
     max_steps: int = 10000
     use_cpp_env: bool = True  # Use C++ pybind11 backend for env simulation
     reward_weights: dict = field(default_factory=lambda: {
-        "w_height": 0.3, "w_holes": 1.5, "w_bumpiness": 0.2,
-        "w_well": 0.5, "w_survival": 0.01, "w_death": -100.0,
+        "w_height": 0.0, "w_holes": 0.0, "w_bumpiness": 0.0,
+        "w_well": 0.0, "w_survival": 0.01, "w_death": -100.0,
     })
 
 
@@ -26,19 +26,19 @@ class NetworkConfig:
     feature_dim: int = 53
     num_actions: int = 112
     use_noisy: bool = True
-    sigma_init: float = 0.017
+    sigma_init: float = 0.01  # Lower initial noise for conservative exploration
 
 
 @dataclass
 class DQNConfig:
     gamma: float = 0.99
     n_step: int = 5
-    lr: float = 6.25e-5
-    batch_size: int = 32
+    lr: float = 2.5e-5  # Conservative: slower learning for stability
+    batch_size: int = 256
     train_every: int = 4
     target_update_freq: int = 8000
     target_update_tau: float = 0.005
-    use_hard_update: bool = True
+    use_hard_update: bool = False  # Polyak soft updates (safer with large batch_size)
     replay_capacity: int = 1_000_000
     per_alpha: float = 0.6
     per_beta_start: float = 0.4
@@ -66,13 +66,15 @@ class PPOConfig:
 @dataclass
 class TrainingConfig:
     algorithm: str = "dqn"  # "dqn" or "ppo"
-    total_steps: int = 50_000_000
+    total_samples: int = 1_000_000_000  # Total training samples consumed (invariant to batch_size)
     eval_every: int = 10_000
     eval_episodes: int = 100
-    save_every: int = 50_000
+    save_every: int = 10_000
     log_every: int = 100
     num_envs: int = 64
     num_pretrain_episodes: int = 1000
+    num_pretrain_envs: int = 16
+    pretrain_sample_tag: str = "latest"  # Tag for loading / saving pretrain samples
     pretrain_epochs: int = 50
     use_pretrain: bool = True
     curriculum_stages: List[dict] = field(default_factory=list)
@@ -87,3 +89,25 @@ class TrainingConfig:
     network: NetworkConfig = field(default_factory=NetworkConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
+
+    # --- Derived values ---
+    _total_steps_override: Optional[int] = field(default=None, repr=False)
+
+    @property
+    def total_steps(self) -> int:
+        """Env steps derived from total_samples + batch_size + train_every.
+
+        Formula (DQN): total_steps = total_samples × train_every / batch_size
+        Formula (PPO): total_steps = total_samples / num_envs
+        """
+        if self._total_steps_override is not None:
+            return self._total_steps_override
+        if self.algorithm == "dqn":
+            return max(1, int(self.total_samples * self.dqn.train_every / self.dqn.batch_size))
+        else:
+            return max(1, int(self.total_samples / self.num_envs))
+
+    @total_steps.setter
+    def total_steps(self, value: int):
+        """Allow CLI --steps to override the derived value."""
+        self._total_steps_override = value
