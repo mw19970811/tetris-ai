@@ -13,6 +13,10 @@ from datetime import datetime
 from typing import Optional, Dict, Tuple
 from collections import deque
 
+# Module-level imports to avoid per-iteration import overhead.
+from env.tetris_env import Action
+from agent.action_mask import decode_action
+
 
 def _fmt_duration(seconds: float) -> str:
     """Format seconds as HH:MM:SS or MM:SS."""
@@ -31,16 +35,21 @@ from .config import TrainingConfig
 from .logger import Logger
 from .checkpoint import CheckpointManager
 from .evaluator import Evaluator
+from .profiler import TrainingProfiler
 
 
 class Trainer:
     """Main trainer orchestrating the RL training pipeline."""
 
     def __init__(self, config: TrainingConfig, resume: bool = False,
-                 resume_from: Optional[str] = None):
+                 resume_from: Optional[str] = None,
+                 profile: bool = False):
         self.cfg = config
         self.device = torch.device(config.device if torch.cuda.is_available() else "cpu")
+        self.profiler = TrainingProfiler(enabled=profile)
         print(f"[Trainer] Using device: {self.device}")
+        if profile:
+            print("[Trainer] Profiling enabled — cumulative phase timings will be reported.")
 
         # Set seeds.
         torch.manual_seed(config.seed)
@@ -251,32 +260,34 @@ class Trainer:
             for env_id in range(self.num_envs):
                 env = self.envs[env_id]
                 board, features = self.obs[env_id][0], self.obs[env_id][1]
-                legal_actions = env.get_legal_actions()
+
+                with self.profiler.phase("legal_actions"):
+                    legal_actions = env.get_legal_actions()
 
                 if not legal_actions:
-                    self.obs[env_id] = env.reset()
+                    with self.profiler.phase("env_reset"):
+                        self.obs[env_id] = env.reset()
                     episode_rewards[env_id] = 0.0
                     episode_steps[env_id] = 0
                     continue
 
                 # Select action.
-                if self.cfg.algorithm == "dqn":
-                    rot, col, hold, action_idx = self.agent.select_action(
-                        board, features, legal_actions, env_id
-                    )
-                    from env.tetris_env import Action
-                    action = Action(rot, col, hold)
-                else:
-                    action_idx, log_prob, value = self.agent.select_action(
-                        board, features, legal_actions, env_id
-                    )
-                    from env.tetris_env import Action
-                    from agent.action_mask import decode_action
-                    rot, col, hold = decode_action(action_idx)
-                    action = Action(rot, col, hold)
+                with self.profiler.phase("action_select"):
+                    if self.cfg.algorithm == "dqn":
+                        rot, col, hold, action_idx = self.agent.select_action(
+                            board, features, legal_actions, env_id
+                        )
+                        action = Action(rot, col, hold)
+                    else:
+                        action_idx, log_prob, value = self.agent.select_action(
+                            board, features, legal_actions, env_id
+                        )
+                        rot, col, hold = decode_action(action_idx)
+                        action = Action(rot, col, hold)
 
                 # Step environment.
-                obs, reward, terminated, truncated, info = env.step(action)
+                with self.profiler.phase("env_step"):
+                    obs, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
                 next_board, next_features = obs[0], obs[1]
 
@@ -287,16 +298,17 @@ class Trainer:
                 state_tuple = (board, features)
                 next_state_tuple = (next_board, next_features)
 
-                if self.cfg.algorithm == "dqn":
-                    self.agent.observe(env_id, state_tuple, action_idx,
-                                       reward, next_state_tuple, done)
-                else:
-                    # PPO: store in rollout buffer.
-                    mask = env.get_legal_actions_mask(self.cfg.network.num_actions)
-                    self.agent.buffer.add(
-                        board, features, action_idx, log_prob, value,
-                        reward, done, mask
-                    )
+                with self.profiler.phase("agent_observe"):
+                    if self.cfg.algorithm == "dqn":
+                        self.agent.observe(env_id, state_tuple, action_idx,
+                                           reward, next_state_tuple, done)
+                    else:
+                        # PPO: store in rollout buffer.
+                        mask = env.get_legal_actions_mask(self.cfg.network.num_actions)
+                        self.agent.buffer.add(
+                            board, features, action_idx, log_prob, value,
+                            reward, done, mask
+                        )
 
                 self.obs[env_id] = obs
 
@@ -308,20 +320,22 @@ class Trainer:
                     episode_steps[env_id] = 0
 
                     # Reset environment.
-                    self.obs[env_id] = env.reset()
+                    with self.profiler.phase("env_reset"):
+                        self.obs[env_id] = env.reset()
 
             # Training update.
-            if self.cfg.algorithm == "dqn":
-                if self.agent.env_step % self.agent.train_every == 0:
-                    metrics = self.agent.update()
-                    if metrics and self.agent.train_step % self.cfg.log_every == 0:
-                        self.logger.log_train(self.agent.env_step, **metrics)
-            else:
-                # PPO: update after collecting full rollout.
-                if len(self.agent.buffer) >= self.cfg.ppo.rollout_steps:
-                    metrics = self.agent.update()
-                    if metrics:
-                        self.logger.log_train(self.agent.env_step, **metrics)
+            with self.profiler.phase("model_update"):
+                if self.cfg.algorithm == "dqn":
+                    if self.agent.env_step % self.agent.train_every == 0:
+                        metrics = self.agent.update()
+                        if metrics and self.agent.train_step % self.cfg.log_every == 0:
+                            self.logger.log_train(self.agent.env_step, **metrics)
+                else:
+                    # PPO: update after collecting full rollout.
+                    if len(self.agent.buffer) >= self.cfg.ppo.rollout_steps:
+                        metrics = self.agent.update()
+                        if metrics:
+                            self.logger.log_train(self.agent.env_step, **metrics)
 
             # Log progress.
             if step % self.cfg.log_every == 0 and step > 0:
@@ -336,6 +350,10 @@ class Trainer:
                       f"|  FPS: {fps:>8,.0f}  "
                       f"|  Elapsed: {_fmt_duration(elapsed)}  "
                       f"|  ETA: {_fmt_duration(eta)}", end="")
+                # Profiler breakdown line.
+                report = self.profiler.report(step, elapsed, self.num_envs)
+                if report:
+                    print(f"\n{report}")
 
             # Evaluation.
             if step % self.cfg.eval_every == 0 and step > 0:
@@ -450,6 +468,8 @@ def main():
                         help="Auto-resume from latest checkpoint in --checkpoint-dir")
     parser.add_argument("--resume-from", type=str, default=None,
                         help="Resume from a specific checkpoint file")
+    parser.add_argument("--profile", action="store_true",
+                        help="Enable per-phase timing breakdown")
     args = parser.parse_args()
 
     config = TrainingConfig(
@@ -463,7 +483,8 @@ def main():
         checkpoint_dir=args.checkpoint_dir,
     )
 
-    trainer = Trainer(config, resume=args.resume, resume_from=args.resume_from)
+    trainer = Trainer(config, resume=args.resume, resume_from=args.resume_from,
+                     profile=args.profile)
     trainer.train()
 
 

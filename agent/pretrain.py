@@ -13,6 +13,7 @@ from typing import List, Tuple, Optional
 
 from .model import DuelingDQN, ActorCritic
 from .action_mask import create_action_mask, encode_action
+from env.tetris_env import Action
 
 # Dellacherie weights (from particle swarm optimisation).
 DELLACHERIE_WEIGHTS = {
@@ -222,7 +223,6 @@ class Pretrainer:
                 actions_list.append(action_idx)
 
                 # Step environment.
-                from env.tetris_env import Action
                 obs, _, terminated, truncated, _ = env.step(Action(rot, col, hold))
                 board_np, feat_np = obs[0], obs[1]
                 done = terminated or truncated
