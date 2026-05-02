@@ -102,7 +102,7 @@ class CheckpointManager:
         buffer_path = path.replace(".pt", "_buffer.pt")
         if replay_buffer is not None and os.path.exists(buffer_path):
             try:
-                buf = torch.load(buffer_path, map_location="cpu")
+                buf = torch.load(buffer_path, map_location="cpu", weights_only=False)
                 if hasattr(replay_buffer, 'load_state_dict'):
                     replay_buffer.load_state_dict(buf)
                 else:

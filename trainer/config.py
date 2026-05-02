@@ -27,6 +27,7 @@ class NetworkConfig:
     num_actions: int = 112
     use_noisy: bool = True
     sigma_init: float = 0.01  # Lower initial noise for conservative exploration
+    sigma_decay: float = 1.0  # Per-training-step sigma decay (1.0 = no decay; 0.999999 = gentle)
 
 
 @dataclass
@@ -39,11 +40,11 @@ class DQNConfig:
     target_update_freq: int = 8000
     target_update_tau: float = 0.005
     use_hard_update: bool = False  # Polyak soft updates (safer with large batch_size)
-    replay_capacity: int = 1_000_000
+    replay_capacity: int = 2_000_000  # Larger buffer for batch_size=256 (~4.4 GB RAM)
     per_alpha: float = 0.6
     per_beta_start: float = 0.4
     per_beta_end: float = 1.0
-    per_beta_frames: int = 10_000_000
+    per_beta_frames: int = 3_000_000  # β anneals to 1.0 at ~77 % of total training updates
     grad_clip_norm: float = 10.0
 
 

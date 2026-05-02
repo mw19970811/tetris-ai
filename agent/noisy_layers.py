@@ -67,6 +67,16 @@ class NoisyLinear(nn.Module):
         """f(x) = sign(x) * sqrt(|x|)"""
         return x.sign() * x.abs().sqrt()
 
+    def scale_sigma(self, factor: float):
+        """Multiply all sigma parameters by *factor* (for scheduled decay)."""
+        with torch.no_grad():
+            self.weight_sigma.mul_(factor)
+            self.bias_sigma.mul_(factor)
+
+    def get_sigma_mean(self) -> float:
+        """Return the mean absolute sigma value (for logging)."""
+        return float(self.weight_sigma.abs().mean().item())
+
     def extra_repr(self) -> str:
         return f"in_features={self.in_features}, out_features={self.out_features}"
 

@@ -82,6 +82,8 @@ class Trainer:
         # Metrics tracking.
         self.episode_rewards = deque(maxlen=100)
         self.episode_lines = deque(maxlen=100)
+        self.episode_pieces = deque(maxlen=100)
+        self.episode_scores = deque(maxlen=100)
         self.best_avg_score = 0.0
         self._last_ckpt_metrics: Dict = {}  # Previous checkpoint's eval for delta comparison
 
@@ -144,6 +146,7 @@ class Trainer:
                 grad_clip_norm=self.cfg.dqn.grad_clip_norm,
                 use_noisy=self.cfg.network.use_noisy,
                 sigma_init=self.cfg.network.sigma_init,
+                sigma_decay=self.cfg.network.sigma_decay,
                 device=str(self.device),
             )
         elif self.cfg.algorithm == "ppo":
@@ -206,7 +209,7 @@ class Trainer:
                 buffer_path = path.replace(".pt", "_buffer.pt")
                 if os.path.exists(buffer_path):
                     try:
-                        buf = torch.load(buffer_path, map_location="cpu")
+                        buf = torch.load(buffer_path, map_location="cpu", weights_only=False)
                         self.agent.memory.load_state_dict(buf)
                         print(f"[Trainer] Restored replay buffer ({len(self.agent.memory):,} transitions).")
                     except Exception as e:
@@ -262,6 +265,7 @@ class Trainer:
         t_start = time.time()
         episode_rewards = [0.0] * self.num_envs
         episode_steps = [0] * self.num_envs
+        dead_count = 0               # Cumulative dead-position counter
 
         for step in range(start_step, total_steps):
             # === Phase 1: Collect states + legal actions for all envs ===
@@ -276,6 +280,12 @@ class Trainer:
                     legal = self.envs[env_id].get_legal_actions()
 
                 if not legal:
+                    # Dead position: no legal moves remain.  Log the board
+                    # state that caused death, then reset for batch continuity.
+                    dead_count += 1
+                    # Capture death context before reset.
+                    dead_board = board  # (1, 22, 10) — raw board at death
+                    dead_height = float(dead_board.sum())  # blocks on board
                     with self.profiler.phase("env_reset"):
                         self.obs[env_id] = self.envs[env_id].reset()
                     episode_rewards[env_id] = 0.0
@@ -297,12 +307,10 @@ class Trainer:
                     batched_actions = self.agent.select_actions_batch(
                         stacked_boards, stacked_features, legal_list
                     )
-                    # [(rot, col, hold, action_idx), ...]
                 else:
                     batched_actions = self.agent.select_actions_batch(
                         stacked_boards, stacked_features, legal_list
                     )
-                    # [(action_idx, log_prob, value), ...]
 
             # === Phase 3: Step + observe for all envs ===
             for env_id in range(self.num_envs):
@@ -342,6 +350,8 @@ class Trainer:
                 if done:
                     self.episode_rewards.append(episode_rewards[env_id])
                     self.episode_lines.append(info.get("lines", 0))
+                    self.episode_pieces.append(info.get("pieces", 0))
+                    self.episode_scores.append(info.get("score", 0))
                     episode_rewards[env_id] = 0.0
                     episode_steps[env_id] = 0
                     with self.profiler.phase("env_reset"):
@@ -368,17 +378,24 @@ class Trainer:
                 eta = (elapsed / progress) - elapsed if progress > 0 else 0
                 avg_reward = np.mean(self.episode_rewards) if self.episode_rewards else 0
                 avg_lines = np.mean(self.episode_lines) if self.episode_lines else 0
+                avg_pieces = np.mean(self.episode_pieces) if self.episode_pieces else 0
+                avg_score = np.mean(self.episode_scores) if self.episode_scores else 0
                 buf_size = len(self.agent.memory) if hasattr(self.agent, 'memory') else 0
+                dead_rate = (dead_count / max(step - start_step, 1)) * 100.0
 
                 # TensorBoard curves.
                 self.logger.log_train_step(
                     step, avg_reward=avg_reward, avg_lines=avg_lines,
                     fps=fps, buffer_size=buf_size, elapsed=elapsed,
+                    dead_count=dead_count, dead_rate=dead_rate,
+                    avg_pieces=avg_pieces, avg_score=avg_score,
                 )
 
                 print(f"\r[{_timestamp()}]  "
                       f"Step {step:>9,}/{total_steps:,} ({progress:.1%})  "
                       f"|  Avg100R: {avg_reward:>10,.1f}  "
+                      f"|  Pieces: {avg_pieces:>5.0f}/ep  "
+                      f"|  Stale: {dead_count:>5}  "
                       f"|  FPS: {fps:>8,.0f}  "
                       f"|  Elapsed: {_fmt_duration(elapsed)}  "
                       f"|  ETA: {_fmt_duration(eta)}", end="")
@@ -406,7 +423,8 @@ class Trainer:
                       f"[Eval  @ step {step:>9,}]  "
                       f"Avg: {eval_metrics['avg_score']:>12,.1f}  "
                       f"Max: {eval_metrics['max_score']:>12,.1f}  "
-                      f"Lines: {eval_metrics['avg_lines']:>8,.1f}  "
+                      f"Lines: {eval_metrics['avg_lines']:>6.1f}  "
+                      f"Steps: {eval_metrics['avg_steps']:>6.0f}/ep  "
                       f"|  Elapsed: {_fmt_duration(elapsed)}")
 
                 # Save best model.
@@ -452,6 +470,65 @@ class Trainer:
                                      "ckpt/max_score": cur_eval["max_score"],
                                      "ckpt/lines": cur_eval["avg_lines"]}, step)
 
+        # ================================================================ #
+        #  Final Evaluation — Agent vs Dellacherie (same seeds, no noise)
+        # ================================================================ #
+        print("\n" + "=" * 60)
+        print(f"[{_timestamp()}]  Final Evaluation — Agent vs Dellacherie")
+        print("  (200 episodes, same seeds, deterministic, no exploration noise)")
+        print("=" * 60)
+
+        try:
+            h2h = self.evaluator.head_to_head(num_episodes=200)
+        except Exception as e:
+            print(f"  Head-to-head evaluation failed: {e}")
+            # Fallback: standard evaluation only.
+            final_eval = self.evaluator.evaluate()
+            h2h = None
+
+        if h2h is not None:
+            print(f"  Episodes:       {h2h['num_episodes']}")
+            print(f"  ───────────  Agent  ───────────")
+            print(f"  Avg Score:      {h2h['agent_avg']:>15,.1f}")
+            print(f"  Max Score:      {h2h['agent_max']:>15,}")
+            print(f"  Min Score:      {h2h['agent_min']:>15,}")
+            print(f"  Std Score:      {h2h['agent_std']:>15,.1f}")
+            print(f"  Avg Lines:      {h2h['agent_avg_lines']:>15,.1f}")
+            print(f"  ───────────  Dellacherie  ──────")
+            print(f"  Avg Score:      {h2h['dl_avg']:>15,.1f}")
+            print(f"  Max Score:      {h2h['dl_max']:>15,}")
+            print(f"  Min Score:      {h2h['dl_min']:>15,}")
+            print(f"  Std Score:      {h2h['dl_std']:>15,.1f}")
+            print(f"  Avg Lines:      {h2h['dl_avg_lines']:>15,.1f}")
+            print(f"  ───────────  Comparison  ────────")
+            print(f"  Mean Gap:       {h2h['mean_gap']:>+15,.1f}")
+            print(f"  Median Gap:     {h2h['median_gap']:>+15,.1f}")
+            print(f"  Win  Rate:      {h2h['win_rate']:>14.1%}  ({h2h['wins']}W / {h2h['losses']}L / {h2h['ties']}T)")
+            print(f"  t-statistic:    {h2h['t_statistic']:>15.2f}")
+            verdict_icon = "✓ Agent beats Dellacherie" if h2h['verdict'] == 'agent' else (
+                "✗ Dellacherie still ahead" if h2h['verdict'] == 'dellacherie' else "≈ Tie"
+            )
+            print(f"  Verdict:        {verdict_icon}")
+
+            # Log to TensorBoard / metrics.
+            for k in ["agent_avg", "agent_max", "agent_avg_lines",
+                      "dl_avg", "dl_max", "dl_avg_lines",
+                      "mean_gap", "median_gap", "win_rate", "t_statistic",
+                      "wins", "losses", "ties"]:
+                self.logger.log({f"final/{k}": h2h[k]}, total_steps)
+
+            final_eval = {"avg_score": h2h["agent_avg"],
+                          "max_score": h2h["agent_max"],
+                          "min_score": h2h["agent_min"],
+                          "std_score": h2h["agent_std"],
+                          "avg_lines": h2h["agent_avg_lines"]}
+        else:
+            print(f"  (Falling back to agent-only evaluation)")
+            print(f"  Avg Score:      {final_eval['avg_score']:>15,.1f}")
+            print(f"  Max Score:      {final_eval['max_score']:>15,.1f}")
+
+        print("=" * 60)
+
         # Final save.
         print("\n[Trainer] Saving final model...")
         self.checkpoint.save_full(total_steps, self.agent,
@@ -464,6 +541,7 @@ class Trainer:
               f"[Trainer] Done.  "
               f"Total steps: {total_steps:,}  "
               f"Best avg score: {self.best_avg_score:,.1f}  "
+              f"Final avg score: {final_eval['avg_score']:,.1f}  "
               f"Duration: {_fmt_duration(total_elapsed)}")
         tee.close()
 

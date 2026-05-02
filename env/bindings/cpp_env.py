@@ -228,5 +228,6 @@ class CppTetrisEnv:
             "level": self._cpp_env.get_level(),
             "lines": self._cpp_env.get_lines_cleared(),
             "steps": self._step_count,
+            "pieces": self._step_count,  # Placement-based: 1 step = 1 piece placed
             "terminated": self._terminated,
         }

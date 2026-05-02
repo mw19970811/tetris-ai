@@ -1267,6 +1267,7 @@ python scripts/train.py --device cuda --envs 64 --profile
 | 指标 | 健康信号 | 警告信号 |
 |------|---------|---------|
 | **Avg100R** | 正数且稳定/上升 | 持续下降，特别是掉到负数 |
+| **Dead** | <5%，逐个下降 | >20%，智能体频繁死亡 |
 | **初始评估分** | ≥30,000（预训练基线） | <5,000（预训练权重未加载） |
 | **FPS** | ≥300 | <100（性能瓶颈） |
 | **checkpoint Δ score** | 正值或小幅波动 | 持续大幅负值 |
@@ -1295,6 +1296,49 @@ w_height: 0.1, w_holes: 0.5, w_bumpiness: 0.1, w_well: 0.2
 2. **旧 checkpoint 含崩溃权重**：删除 `checkpoints/` 目录重新训练
 3. **C++ env 未编译**：如果 `use_cpp_env: true` 但 `.pyd` 不在 `env/bindings/`，会回退到纯 Python env（慢 3-5x）
 4. **旧 `total_steps` 思维**：配置改为 `total_samples`，旧 YAML 中的 `total_steps` 会被忽略（除非 CLI `--steps` 覆盖）
+
+### 10.6 最终评估（Agent vs Dellacherie 头对头）
+
+训练结束后自动运行 200 局头对头对比：
+
+```
+============================================================
+[2026-05-03 08:00:00]  Final Evaluation — Agent vs Dellacherie
+  (200 episodes, same seeds, deterministic, no exploration noise)
+============================================================
+  Episodes:       200
+  ───────────  Agent  ───────────
+  Avg Score:          52,300.5
+  Max Score:             245,000
+  ───────────  Dellacherie  ──────
+  Avg Score:          45,000.0
+  Max Score:             210,000
+  ───────────  Comparison  ────────
+  Mean Gap:            +7,300.5
+  Win Rate:              62.5%  (125W / 75L / 0T)
+  t-statistic:             3.42
+  Verdict:        ✓ Agent beats Dellacherie
+============================================================
+```
+
+**评估条件：**
+
+| 条件 | 说明 |
+|------|------|
+| 初始局面 | `env.reset(seed=ep)`，ep=0..199，双方同种子 |
+| 探索噪声 | **关闭**。`eval_mode()` → NoisyNet 仅用 μ 权重 |
+| 动作选择 | 贪婪（始终选 Q 值最高的动作） |
+| 比较局数 | 200 局 |
+
+**判断标准：**
+
+| 结果 | 含义 |
+|------|------|
+| Win Rate > 50% 且 Mean Gap > 0 | ✓ RL 策略超越 Dellacherie |
+| Win Rate ≈ 50% 且 Gap ≈ 0 | ≈ 持平 |
+| Win Rate < 50% 且 Mean Gap < 0 | ✗ 未超越，需继续训练或调参 |
+
+**设计文档**：`docs/final-eval-design.md`
 
 ---
 

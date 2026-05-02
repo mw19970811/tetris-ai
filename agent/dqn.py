@@ -47,6 +47,7 @@ class RainbowDQN:
                  grad_clip_norm: float = 10.0,
                  use_noisy: bool = True,
                  sigma_init: float = 0.017,
+                 sigma_decay: float = 1.0,
                  device: str = "cuda"):
         self.num_actions = num_actions
         self.gamma = gamma
@@ -57,6 +58,8 @@ class RainbowDQN:
         self.target_update_tau = target_update_tau
         self.use_hard_update = use_hard_update
         self.grad_clip_norm = grad_clip_norm
+        self.sigma_decay = sigma_decay
+        self._last_hard_sync_step = 0
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
 
         # Networks.
@@ -195,19 +198,40 @@ class RainbowDQN:
 
         # Target network update.
         self.train_step += 1
+        sync_event = None  # Set to step number when a hard sync occurs.
+
         if self.use_hard_update and self.train_step % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.online_net.state_dict())
+            sync_event = self.train_step
         elif not self.use_hard_update:
+            # Polyak soft update every training step.
             for tp, op in zip(self.target_net.parameters(), self.online_net.parameters()):
                 tp.data.copy_(self.target_update_tau * op.data + (1 - self.target_update_tau) * tp.data)
+            # Periodic anchor hard sync (logs when it fires).
+            if self.train_step % self.target_update_freq == 0:
+                self.target_net.load_state_dict(self.online_net.state_dict())
+                sync_event = self.train_step
 
-        return {
+        # Scheduled sigma decay for NoisyLinear layers.
+        sigma_mean = 0.0
+        if self.sigma_decay < 1.0:
+            for module in self.online_net.modules():
+                if hasattr(module, 'scale_sigma'):
+                    module.scale_sigma(self.sigma_decay)
+                    sigma_mean += module.get_sigma_mean()
+
+        metrics = {
             "q_loss": loss.item(),
             "q_mean": current_q.mean().item(),
             "q_max": current_q.max().item(),
             "td_error_mean": td_errors.abs().mean().item(),
             "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
         }
+        if sync_event is not None:
+            metrics["target_sync"] = sync_event
+        if sigma_mean > 0:
+            metrics["sigma_mean"] = sigma_mean
+        return metrics
 
     # ------------------------------------------------------------------ #
     #  Experience Collection
