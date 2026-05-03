@@ -25,7 +25,21 @@ pip install pybind11 cmake
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . --target tetris_core --config Release
+
+# 【关键】将编译产物从 build/env/bindings/ 复制到 env/bindings/ (与 cpp_env.py 同级)
+# Windows:
+copy env\bindings\Release\tetris_core.*.pyd ..\env\bindings\
+# Linux:
+cp env/bindings/tetris_core.*.so ../env/bindings/
+
+cd ..
 ```
+
+> **pybind11 找不到？** 如果 cmake 报 `pybind11 not found`，在 cmake 时指定 pybind11 路径：
+> ```bash
+> cmake .. -DCMAKE_BUILD_TYPE=Release -Dpybind11_DIR="$(python -c 'import pybind11;print(pybind11.get_cmake_dir())')"
+> ```
+> 编译产物位于 `build/env/bindings/`（Windows MSVC 为 `build/env/bindings/Release/`），必须复制到项目根目录的 `env/bindings/` 下，`cpp_env.py` 才能加载。
 
 ### 训练
 
@@ -34,7 +48,6 @@ cmake --build . --target tetris_core --config Release
 python scripts/train.py
 
 # 启用 C++ 加速训练 (需先编译 tetris_core)
-# 在 YAML 配置中设 env.use_cpp_env: true, 或传入 CLI
 python scripts/train.py --device cuda --envs 64
 
 # PPO 训练
@@ -43,6 +56,22 @@ python scripts/train.py --algo ppo
 # 从 checkpoint 恢复
 python scripts/train.py --resume
 ```
+
+**关键配置参数**（在 `trainer/config.py` 中修改，或通过 CLI 传入）：
+
+| 参数 | 位置 | 说明 |
+|------|------|------|
+| `total_samples` | `TrainingConfig` | 总训练样本数，自动推导 `total_steps`（DQN: `samples × train_every / batch_size`） |
+| `--samples` | CLI | 覆盖 `total_samples`，如 `--samples 500000000` |
+| `--steps` | CLI | 直接指定 env steps，绕过推导公式 |
+| `reward_weights.w_height` | `EnvConfig` | 高度惩罚权重（诊断期 = 0.0） |
+| `reward_weights.w_holes` | `EnvConfig` | 孔洞惩罚权重（诊断期 = 0.0） |
+| `reward_weights.w_bumpiness` | `EnvConfig` | 崎岖度惩罚权重（诊断期 = 0.0） |
+| `reward_weights.w_well` | `EnvConfig` | 井深惩罚权重（诊断期 = 0.0） |
+| `reward_weights.w_survival` | `EnvConfig` | 存活奖励（= 0.01） |
+| `reward_weights.w_death` | `EnvConfig` | 死亡惩罚（= -100.0） |
+
+> 奖励权重当前为**诊断期配置**（惩罚项全部归零），排除奖励塑形导致的灾难性遗忘。收敛稳定后逐步恢复。详见 [docs/usage-guide.md#十](docs/usage-guide.md)。
 
 ### 评估
 

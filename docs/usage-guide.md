@@ -161,14 +161,18 @@ cd build
 # 3. CMake 配置 (自动检测 Visual Studio)
 cmake .. -DCMAKE_BUILD_TYPE=Release
 
+# 如果 cmake 报 "pybind11 not found"，手动指定 pybind11 路径：
+# cmake .. -DCMAKE_BUILD_TYPE=Release -Dpybind11_DIR="$(python -c 'import pybind11;print(pybind11.get_cmake_dir())')"
+
 # 4. 编译 tetris_core 模块
 cmake --build . --target tetris_core --config Release
 
 # 5. 将编译产物复制到 Python 可发现路径
+# 【关键】编译产物在 build/env/bindings/Release/ 下，需复制到项目根目录的 env/bindings/
 copy env\bindings\Release\tetris_core.*.pyd ..\env\bindings\
 ```
 
-编译产物为 `tetris_core.cp314-win_amd64.pyd`（文件名随 Python 版本变化）。编译完成后回到项目根目录：
+编译产物为 `tetris_core.cp314-win_amd64.pyd`（文件名随 Python 版本变化），位于 `build/env/bindings/Release/`。编译完成后回到项目根目录：
 
 ```powershell
 cd ..
@@ -219,10 +223,14 @@ mkdir -p build && cd build
 # 4. CMake 配置 (GCC + Release)
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
 
+# 如果 cmake 报 "pybind11 not found"，手动指定 pybind11 路径：
+# cmake .. -DCMAKE_BUILD_TYPE=Release -Dpybind11_DIR="$(python3 -c 'import pybind11;print(pybind11.get_cmake_dir())')"
+
 # 5. 编译 tetris_core 模块
 cmake --build . --target tetris_core -j$(nproc)
 
 # 6. 将编译产物复制到 env/bindings/ (与 cpp_env.py 同级)
+# 【关键】编译产物在 build/env/bindings/ 下，需复制到项目根目录的 env/bindings/
 cp env/bindings/tetris_core.*.so ../env/bindings/
 ```
 
@@ -767,6 +775,52 @@ Score(placement) = -4.500 × landing_height
 
 ## 六、配置参考
 
+### 6.0 配置方式
+
+项目支持两种配置方式：直接修改 `trainer/config.py` 中的 dataclass 默认值，或通过 CLI 参数传入。
+
+**方式 A — 修改 `trainer/config.py`**（推荐，持久生效）：
+
+```python
+# trainer/config.py
+
+@dataclass
+class TrainingConfig:
+    total_samples: int = 500_000_000  # 改为 500M 样本
+
+@dataclass
+class EnvConfig:
+    reward_weights: dict = field(default_factory=lambda: {
+        "w_height": 0.0,     # 高度惩罚
+        "w_holes": 0.0,      # 孔洞惩罚
+        "w_bumpiness": 0.0,  # 崎岖度惩罚
+        "w_well": 0.0,       # 井深惩罚
+        "w_survival": 0.01,  # 存活奖励
+        "w_death": -100.0,   # 死亡惩罚
+    })
+```
+
+**方式 B — CLI 参数**（一次性覆盖）：
+
+```bash
+# 指定训练样本数（自动推导 total_steps）
+python scripts/train.py --samples 500000000
+
+# 直接指定环境步数（绕过推导公式）
+python scripts/train.py --steps 10000000
+
+# 其他常用参数
+python scripts/train.py --device cuda --envs 64 --algo dqn
+```
+
+> **`total_samples` vs `total_steps`**：
+> - `total_samples` 是**训练样本数**（喂给 optimizer 的 transition 数量），与 batch_size 无关
+> - `total_steps` 是**环境交互步数**，由 `total_samples` 自动推导：
+>   - DQN: `total_steps = total_samples × train_every / batch_size`
+>   - PPO: `total_steps = total_samples / num_envs`
+> - 默认 1B samples + batch_size=256 → 约 15.6M env steps
+> - CLI `--steps` 优先级最高，会绕过推导直接覆盖
+
 ### 6.1 训练配置 (TrainingConfig)
 
 | 参数 | 默认值 | 说明 |
@@ -900,6 +954,8 @@ Score(placement) = -4.500 × landing_height
 pip install pybind11 cmake
 mkdir build; cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
+# 如果 cmake 报 "pybind11 not found"：
+# cmake .. -DCMAKE_BUILD_TYPE=Release -Dpybind11_DIR="$(python -c 'import pybind11;print(pybind11.get_cmake_dir())')"
 cmake --build . --target tetris_core --config Release
 copy env\bindings\Release\tetris_core.*.pyd ..\env\bindings\
 ```
@@ -911,13 +967,16 @@ sudo apt-get install -y build-essential cmake python3-dev
 pip install pybind11 cmake
 mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+# 如果 cmake 报 "pybind11 not found"：
+# cmake .. -DCMAKE_BUILD_TYPE=Release -Dpybind11_DIR="$(python3 -c 'import pybind11;print(pybind11.get_cmake_dir())')"
 cmake --build . --target tetris_core -j$(nproc)
 cp env/bindings/tetris_core.*.so ../env/bindings/
 ```
 
-编译产物：Windows 为 `tetris_core.cp314-win_amd64.pyd`，Linux 为 `tetris_core.cpython-3xx-x86_64-linux-gnu.so`（文件名随 Python 版本变化）。
+编译产物：Windows 为 `tetris_core.cp314-win_amd64.pyd`（位于 `build/env/bindings/Release/`），Linux 为 `tetris_core.cpython-3xx-x86_64-linux-gnu.so`（位于 `build/env/bindings/`）。文件名随 Python 版本变化。
 
-> ⚠️ **关键**：编译产物必须放在 `env/bindings/` 目录下（与 `cpp_env.py` 同级），**不要**放在项目根目录的 `tetris_core/` 文件夹内。如果存在 `tetris_core/` 目录，Python 会将其识别为 namespace package 而屏蔽同名的 `.pyd`/`.so` 模块。删除 `tetris_core/` 目录后重新运行即可。
+> ⚠️ **关键**：编译产物位于 `build/env/bindings/`（Windows MSVC 多配置下为 `build/env/bindings/Release/`），**必须复制到项目根目录的 `env/bindings/`**（与 `cpp_env.py` 同级），`cpp_env.py` 才能通过 `from . import tetris_core` 加载。
+> **不要**将编译产物放在项目根目录的 `tetris_core/` 文件夹内。如果存在 `tetris_core/` 目录，Python 会将其识别为 namespace package 而屏蔽同名的 `.pyd`/`.so` 模块。删除 `tetris_core/` 目录后重新运行即可。
 
 #### 启用
 
