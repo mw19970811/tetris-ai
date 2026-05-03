@@ -42,7 +42,7 @@ class DQNConfig:
     train_every: int = 4
     target_update_freq: int = 8000
     target_update_tau: float = 0.005
-    use_hard_update: bool = False  # Polyak soft updates (safer with large batch_size)
+    use_hard_update: bool = True  # Polyak soft updates (safer with large batch_size)
     replay_capacity: int = 2_000_000  # Larger buffer for batch_size=256 (~4.4 GB RAM)
     per_alpha: float = 0.6
     per_beta_start: float = 0.4
