@@ -111,11 +111,12 @@ class Logger:
     def log_train_step(self, step: int, avg_reward: float, avg_lines: float,
                        fps: float, buffer_size: int, elapsed: float,
                        dead_count: int = 0, dead_rate: float = 0.0,
-                       **extra):
+                       avg_steps: float = 0.0, **extra):
         """Log per-log-interval training scalars (the main curves)."""
         self.log({
             "train/avg_reward": avg_reward,
             "train/avg_lines": avg_lines,
+            "train/avg_steps": avg_steps,
             "train/fps": fps,
             "train/buffer_size": buffer_size,
             "train/elapsed_h": elapsed / 3600.0,

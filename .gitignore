@@ -1,0 +1,17 @@
+# vscode
+.vscode/
+# Python
+__pycache__/
+*.pyc
+# Jupyter Notebook
+.ipynb_checkpoints/
+# Data files
+*.csv
+*.json
+*.h5
+*.hdf5
+# Logs and checkpoints
+logs/
+checkpoints/
+pretrained_models/
+pretrain/

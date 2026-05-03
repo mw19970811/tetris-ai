@@ -65,7 +65,11 @@ class Trainer:
         )
 
         # Checkpoint manager.
-        self.checkpoint = CheckpointManager(config.checkpoint_dir)
+        self.checkpoint = CheckpointManager(
+            config.checkpoint_dir,
+            keep_best=config.checkpoint_keep_best,
+            keep_latest=config.checkpoint_keep_latest,
+        )
 
         # Create environments.
         self._create_envs()
@@ -84,6 +88,7 @@ class Trainer:
         self.episode_lines = deque(maxlen=100)
         self.episode_pieces = deque(maxlen=100)
         self.episode_scores = deque(maxlen=100)
+        self.episode_steps = deque(maxlen=100)
         self.best_avg_score = 0.0
         self._last_ckpt_metrics: Dict = {}  # Previous checkpoint's eval for delta comparison
 
@@ -352,6 +357,7 @@ class Trainer:
                     self.episode_lines.append(info.get("lines", 0))
                     self.episode_pieces.append(info.get("pieces", 0))
                     self.episode_scores.append(info.get("score", 0))
+                    self.episode_steps.append(info.get("steps", episode_steps[env_id]))
                     episode_rewards[env_id] = 0.0
                     episode_steps[env_id] = 0
                     with self.profiler.phase("env_reset"):
@@ -380,8 +386,17 @@ class Trainer:
                 avg_lines = np.mean(self.episode_lines) if self.episode_lines else 0
                 avg_pieces = np.mean(self.episode_pieces) if self.episode_pieces else 0
                 avg_score = np.mean(self.episode_scores) if self.episode_scores else 0
+                avg_steps = np.mean(self.episode_steps) if self.episode_steps else 0
                 buf_size = len(self.agent.memory) if hasattr(self.agent, 'memory') else 0
                 dead_rate = (dead_count / max(step - start_step, 1)) * 100.0
+
+                # Current NoisyLinear sigma mean (for monitoring decay).
+                sigma_mean = 0.0
+                if hasattr(self.agent, 'online_net'):
+                    sigma_mean = sum(
+                        m.get_sigma_mean() for m in self.agent.online_net.modules()
+                        if hasattr(m, 'get_sigma_mean')
+                    )
 
                 # TensorBoard curves.
                 self.logger.log_train_step(
@@ -389,12 +404,15 @@ class Trainer:
                     fps=fps, buffer_size=buf_size, elapsed=elapsed,
                     dead_count=dead_count, dead_rate=dead_rate,
                     avg_pieces=avg_pieces, avg_score=avg_score,
+                    avg_steps=avg_steps, sigma_mean=sigma_mean,
                 )
 
                 print(f"\r[{_timestamp()}]  "
                       f"Step {step:>9,}/{total_steps:,} ({progress:.1%})  "
                       f"|  Avg100R: {avg_reward:>10,.1f}  "
                       f"|  Pieces: {avg_pieces:>5.0f}/ep  "
+                      f"|  Steps: {avg_steps:>6.0f}/ep  "
+                      f"|  Sigma: {sigma_mean:.5f}  "
                       f"|  Stale: {dead_count:>5}  "
                       f"|  FPS: {fps:>8,.0f}  "
                       f"|  Elapsed: {_fmt_duration(elapsed)}  "
@@ -430,21 +448,22 @@ class Trainer:
                 # Save best model.
                 if eval_metrics["avg_score"] > self.best_avg_score:
                     self.best_avg_score = eval_metrics["avg_score"]
-                    self.checkpoint.save_full(
+                    path = self.checkpoint.save_full(
                         step, self.agent,
                         replay_buffer=self.agent.memory if hasattr(self.agent, 'memory') else None
                     )
-                    self.checkpoint.mark_best(step)
+                    self.checkpoint.record_score(path, eval_metrics["avg_score"])
 
             # Periodic checkpoint.
             if step % self.cfg.save_every == 0 and step > 0:
-                self.checkpoint.save_full(
+                path = self.checkpoint.save_full(
                     step, self.agent,
                     replay_buffer=self.agent.memory if hasattr(self.agent, 'memory') else None
                 )
                 # Log delta vs previous checkpoint.
                 prev = self._last_ckpt_metrics
                 cur_eval = self.evaluator.evaluate()
+                self.checkpoint.record_score(path, cur_eval["avg_score"])
                 self._last_ckpt_metrics = cur_eval
                 if prev:
                     delta_score = cur_eval["avg_score"] - prev["avg_score"]
@@ -531,8 +550,11 @@ class Trainer:
 
         # Final save.
         print("\n[Trainer] Saving final model...")
-        self.checkpoint.save_full(total_steps, self.agent,
-                                  replay_buffer=self.agent.memory if hasattr(self.agent, 'memory') else None)
+        final_path = self.checkpoint.save_full(
+            total_steps, self.agent,
+            replay_buffer=self.agent.memory if hasattr(self.agent, 'memory') else None
+        )
+        self.checkpoint.record_score(final_path, final_eval["avg_score"])
         self.logger.save_metrics()
         self.logger.close()
 

@@ -10,15 +10,18 @@ from datetime import datetime
 class CheckpointManager:
     """Manages saving/loading of training checkpoints.
 
-    Cleanup policy: retains the *best* checkpoint (by evaluation score)
-    plus the *keep* most-recent periodic checkpoints.  Older checkpoints
-    are deleted automatically.
+    Cleanup policy: retains the *keep_best* checkpoints with highest
+    evaluation scores, plus the *keep_latest* most-recent checkpoints
+    (the two sets may overlap).  Older checkpoints are deleted
+    automatically.
     """
 
-    def __init__(self, checkpoint_dir: str = "checkpoints", keep: int = 10):
+    def __init__(self, checkpoint_dir: str = "checkpoints",
+                 keep_best: int = 5, keep_latest: int = 1):
         self.checkpoint_dir = checkpoint_dir
-        self.keep = keep
-        self._best_path: Optional[str] = None
+        self.keep_best = keep_best
+        self.keep_latest = keep_latest
+        self._checkpoint_scores: Dict[str, float] = {}
         os.makedirs(checkpoint_dir, exist_ok=True)
 
     def save(self, step: int, model: torch.nn.Module,
@@ -147,20 +150,27 @@ class CheckpointManager:
         files.sort(key=lambda f: int(os.path.splitext(os.path.basename(f))[0].split("_")[1]))
         return files[-1]
 
-    def mark_best(self, step: int):
-        """Protect the checkpoint at *step* from automatic cleanup."""
-        self._best_path = os.path.join(self.checkpoint_dir, f"step_{step:09d}.pt")
+    def record_score(self, path: str, score: float):
+        """Record the evaluation score for a checkpoint, used for best-N retention."""
+        self._checkpoint_scores[path] = score
 
     def _cleanup(self):
-        """Keep best checkpoint + most recent ``keep`` periodic checkpoints."""
+        """Keep top ``keep_best`` by score + most recent ``keep_latest``."""
         pattern = os.path.join(self.checkpoint_dir, "step_*.pt")
         files = [f for f in glob.glob(pattern) if "_buffer" not in f]
+        if len(files) <= self.keep_best + self.keep_latest:
+            return
         files.sort(key=lambda f: int(os.path.splitext(os.path.basename(f))[0].split("_")[1]))
 
-        # Protected set: best checkpoint is never deleted.
-        protected = {self._best_path} if self._best_path and os.path.exists(self._best_path) else set()
-        recent = set(files[-self.keep:])
-        protected |= recent
+        # Top keep_best by recorded evaluation score.
+        scored = [(f, self._checkpoint_scores.get(f, 0.0)) for f in files]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        top_n = {f for f, _ in scored[:self.keep_best]}
+
+        # Most recent keep_latest.
+        latest_n = set(files[-self.keep_latest:])
+
+        protected = top_n | latest_n
 
         for f in files:
             if f not in protected:

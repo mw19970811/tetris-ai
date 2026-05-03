@@ -19,27 +19,9 @@ git clone <repo-url> && cd tetris-ai
 
 # 安装 Python 依赖
 pip install torch numpy
-
-# (可选但推荐) 编译 C++ 环境加速核心 (3-5x 吞吐提升)
-pip install pybind11 cmake
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --target tetris_core --config Release
-
-# 【关键】将编译产物从 build/env/bindings/ 复制到 env/bindings/ (与 cpp_env.py 同级)
-# Windows:
-copy env\bindings\Release\tetris_core.*.pyd ..\env\bindings\
-# Linux:
-cp env/bindings/tetris_core.*.so ../env/bindings/
-
-cd ..
 ```
 
-> **pybind11 找不到？** 如果 cmake 报 `pybind11 not found`，在 cmake 时指定 pybind11 路径：
-> ```bash
-> cmake .. -DCMAKE_BUILD_TYPE=Release -Dpybind11_DIR="$(python -c 'import pybind11;print(pybind11.get_cmake_dir())')"
-> ```
-> 编译产物位于 `build/env/bindings/`（Windows MSVC 为 `build/env/bindings/Release/`），必须复制到项目根目录的 `env/bindings/` 下，`cpp_env.py` 才能加载。
+> 详细安装步骤（C++ 加速编译、各平台配置、ONNX Runtime 推理引擎编译等）见 **[使用文档 - 安装](docs/usage-guide.md#三安装)**。
 
 ### 训练
 
@@ -134,14 +116,7 @@ agent-ai/
 
 ## C++ 加速
 
-项目提供两层 C++ 加速，均为可选：
-
-| 组件 | 加速对象 | 预期提升 | 启用方式 |
-|------|---------|---------|---------|
-| `env/core` + pybind11 | 环境模拟 (get_legal_actions, step, encode) | **3-4x** 训练吞吐 | `env.use_cpp_env: true` |
-| `inference/cpp` | ONNX 推理 + 裸奔 AI | **1.5-2x** 推理延迟 | `cmake --build . --target tetris_inference` |
-
-详情见 [docs/usage-guide.md#八-C++ 加速方案](docs/usage-guide.md)。
+项目提供两层可选 C++ 加速（环境模拟 3-4x，推理 1.5-2x）。编译步骤和使用方式详见 **[使用文档 - C++ 加速方案](docs/usage-guide.md#八-C++ 加速方案)**。
 
 ---
 

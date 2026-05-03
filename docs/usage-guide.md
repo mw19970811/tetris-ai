@@ -358,12 +358,14 @@ python scripts/train.py --resume-from checkpoints/step_005000000.pt
 python scripts/train.py --resume --steps 100000000
 ```
 
-训练过程中，checkpoint 会自动保存到 `checkpoints/` 目录，每 50,000 步保存一次。每次保存包含模型权重、optimizer 状态、训练步数计数器，以及 replay buffer（存为独立 `_buffer.pt` 文件）。
+训练过程中，checkpoint 会自动保存到 `checkpoints/` 目录，每 `save_every` 步（默认 10,000）保存一次。每次保存包含模型权重、optimizer 状态、训练步数计数器，以及 replay buffer（存为独立 `_buffer.pt` 文件）。
+
+**Checkpoint 保留策略**：保留评估分数最高的 5 次 checkpoint + 最近 1 次 checkpoint（两者可能有交集，最多保留 6 个）。旧 checkpoint 自动清理，避免磁盘占用过大。
 
 **训练日志格式**：
 
 ```
-[2026-04-30 08:42:30]  Step    50,000/50,000,000 (1.0%)  |  Avg100R:     123.4  |  FPS:   32,000  |  Elapsed: 1h02m03s  |  ETA: 1h30m00s
+[2026-05-03 08:42:30]  Step    50,000/15,625,000 (0.3%)  |  Avg100R:     123.4  |  Pieces:    45/ep  |  Steps:    320/ep  |  Stale:    12  |  FPS:   32,000  |  Elapsed: 1h02m03s  |  ETA: 1h30m00s
 ```
 
 每行包含：当前时间戳、步数/总步数（进度百分比）、最近100局的均分、采样速度（FPS）、已用时间和预计剩余时间（ETA）。评估时也会打印时间戳和已用时间。
@@ -607,7 +609,19 @@ y = (b + W \odot \epsilon^b) + (W + W \odot \epsilon^w) x
 **优势**：
 - 探索策略随训练自适应：收敛区域减少噪声（利用），不确定区域增加噪声（探索）
 - 不需要手工设计 ε 衰减曲线
-- 噪声参数 \(\sigma\) 初始化为 0.017
+- 噪声参数 \(\sigma\) 初始化为 0.01，每训练步乘以衰减系数 0.99999994
+
+**σ 衰减曲线**（默认 15.6M 训练步）：
+
+| 步数 | σ 比例 | 阶段 |
+|------|--------|------|
+| 0 | 100% | 初始探索 |
+| 3M | 84% | 强力探索，PER β→1.0 同步 |
+| 6M | 70% | 探索为主 |
+| 12M | 49% | 偏向利用 |
+| 15.6M | 39% | 收敛阶段 |
+
+衰减仅在训练时生效（`forward()` 的 `self.training` 分支），评估时关闭噪声仅用 μ 权重。
 
 **代码位置**：`agent/noisy_layers.py` — `NoisyLinear` 类
 
@@ -833,6 +847,8 @@ python scripts/train.py --device cuda --envs 64 --algo dqn
 | `num_envs` | 64 | 并行环境数 |
 | `num_pretrain_envs` | 16 | 预训练数据收集的并行环境数 |
 | `pretrain_sample_tag` | `"latest"` | 预训练样本文件标签 |
+| `checkpoint_keep_best` | 5 | 按评估分数保留的最优 checkpoint 数量 |
+| `checkpoint_keep_latest` | 1 | 始终保留的最近 checkpoint 数量 |
 | `device` | `"cuda"` | 训练设备 |
 | `seed` | 42 | 随机种子 |
 
@@ -870,6 +886,7 @@ python scripts/train.py --device cuda --envs 64 --algo dqn
 | `num_actions` | 112 | 最大动作数 |
 | `use_noisy` | true | 使用 NoisyNet（学习型探索） |
 | `sigma_init` | **0.01** | NoisyNet 初始噪声（保守，配合大 batch_size） |
+| `sigma_decay` | **0.99999994** | 每训练步 σ 衰减系数；优先保护早期探索，15.6M 步后 σ 约 39% |
 
 ### 6.4 PPO 配置 (PPOConfig)
 
@@ -1295,6 +1312,7 @@ dqn:
   target_update_tau: 0.005
 network:
   sigma_init: 0.01               # 保守噪声
+  sigma_decay: 0.99999994         # 缓慢衰减，末期 ~39%
 env:
   reward_weights:
     w_height: 0.0                # 诊断期归零

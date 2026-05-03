@@ -27,7 +27,7 @@ class NetworkConfig:
     num_actions: int = 112
     use_noisy: bool = True
     sigma_init: float = 0.01  # Lower initial noise for conservative exploration
-    sigma_decay: float = 1.0  # Per-training-step sigma decay (1.0 = no decay; 0.999999 = gentle)
+    sigma_decay: float = 0.99999994  # Per-step sigma decay; σ → ~70% at 6M, ~39% at 15.6M steps
 
 
 @dataclass
@@ -82,6 +82,8 @@ class TrainingConfig:
     device: str = "cuda"
     seed: int = 42
     checkpoint_dir: str = "checkpoints"
+    checkpoint_keep_best: int = 5
+    checkpoint_keep_latest: int = 1
     log_dir: str = "logs"
     use_wandb: bool = False
     wandb_project: str = "tetris-ai"
