@@ -213,7 +213,7 @@ class Pretrainer:
     def collect_dataset(self, env_creator, num_episodes: int = 1000,
                          num_envs: int = 16
                         ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
-                                   np.ndarray, Dict]:
+                                   np.ndarray, dict]:
         """Run Dellacherie expert across N parallel envs to collect (state, action) pairs.
 
         Returns:
@@ -297,7 +297,7 @@ class Pretrainer:
     # ------------------------------------------------------------------ #
     def save_samples(self, boards: np.ndarray, features: np.ndarray,
                      actions: np.ndarray, scores: np.ndarray,
-                     metadata: Dict, tag: str = "latest") -> str:
+                     metadata: dict, tag: str = "latest") -> str:
         """Persist collected samples to disk. Returns the save path."""
         os.makedirs(self.sample_dir, exist_ok=True)
         base = os.path.join(self.sample_dir, f"samples_{tag}")
@@ -312,7 +312,7 @@ class Pretrainer:
 
     def load_samples(self, tag: str = "latest"
                      ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
-                                np.ndarray, Dict]:
+                                np.ndarray, dict]:
         """Load previously saved pretrain samples. Returns (boards, features, actions, scores, metadata)."""
         base = os.path.join(self.sample_dir, f"samples_{tag}")
         data = np.load(base + ".npz")
@@ -324,7 +324,7 @@ class Pretrainer:
 
     def load_partial_samples(self, tag: str = "latest", max_transitions: int = None
                              ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
-                                        np.ndarray, Dict]:
+                                        np.ndarray, dict]:
         """Load a subset of saved samples (useful for ablation with varied data sizes)."""
         boards, features, actions, scores, metadata = self.load_samples(tag)
         if max_transitions and max_transitions < len(actions):
