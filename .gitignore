@@ -15,3 +15,18 @@ logs/
 checkpoints/
 pretrained_models/
 pretrain/
+# build and dist
+build/
+dist/
+*.egg-info/
+*/__pycache__/
+*.pyd
+*.pyc
+# C++ build artifacts
+*.o
+*.so
+*.dll
+*.exe
+# Git
+.git/
+.gitignore

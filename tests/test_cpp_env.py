@@ -1,9 +1,13 @@
 """Tests for C++-accelerated Tetris environment (CppTetrisEnv)."""
 
 import sys
+import os
 import time
 import pytest
 import numpy as np
+
+# Allow running as: python tests/test_cpp_env.py
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from env.tetris_env import TetrisEnv, EnvConfig, Action
 from env.reward_calculator import RewardConfig
