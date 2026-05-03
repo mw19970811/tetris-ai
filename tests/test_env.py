@@ -103,7 +103,7 @@ class TestRewardCalculator:
     def test_line_clear_reward(self):
         calc = RewardCalculator(RewardConfig())
         r = calc.compute(lines_cleared=4, level=1, drop_distance=0, holes=0)
-        assert r == pytest.approx(800.01)  # 4 lines * 200 base * 1 + 0.01 survival
+        assert r == pytest.approx(2000.01)  # 4 lines (Tetris) * 2000 * 1 + 0.01
 
     def test_death_penalty(self):
         calc = RewardCalculator(RewardConfig())
@@ -127,7 +127,7 @@ class TestRewardCalculator:
             heights_sum=50, holes=5, bumpiness=10, max_well=3,
         )
         assert "total" in components
-        assert abs(components["line_clear"] - 600.0) < 0.01  # 2 lines * 300 * 2
+        assert abs(components["line_clear"] - 1000.0) < 0.01  # 2 lines * 500 * 2
         assert abs(components["hard_drop"] - 10.0) < 0.01  # 5 cells * 2
 
 

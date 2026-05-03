@@ -14,8 +14,8 @@ class RewardConfig:
     w_survival: float = 0.01
     w_death: float = -100.0
 
-    # Line clear base scores (× level)
-    line_scores: tuple = (0, 100, 300, 500, 800)
+    # Line clear base scores (× level) — amplified to incentivise scoring
+    line_scores: tuple = (0, 150, 500, 1000, 2000)
 
     hard_drop_score: float = 2.0   # per cell
     soft_drop_score: float = 1.0   # per cell

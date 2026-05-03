@@ -256,8 +256,8 @@ inline const std::unordered_map<std::string, std::vector<KickEntry>> WALL_KICKS_
     {"0>3", {{0,0},{-1,0},{2,0},{-1,-2},{2,1}}}
 };
 
-// Scoring table: lines_cleared -> base_score
-inline constexpr int SCORE_TABLE[] = {0, 100, 300, 500, 800};
+// Scoring table: lines_cleared -> base_score  (amplified to incentivise clears)
+inline constexpr int SCORE_TABLE[] = {0, 150, 500, 1000, 2000};
 
 // Speed curve: drop interval in ms per level (level 1 = index 0)
 inline constexpr int DROP_SPEEDS[] = {

@@ -16,6 +16,9 @@ class EnvConfig:
     reward_weights: dict = field(default_factory=lambda: {
         "w_height": 0.0, "w_holes": 0.0, "w_bumpiness": 0.0,
         "w_well": 0.0, "w_survival": 0.01, "w_death": -100.0,
+        # Amplified line-clear rewards to incentivise scoring over mere survival.
+        # (single, double, triple, tetris) × level
+        "line_scores": (0, 150, 500, 1000, 2000),
     })
 
 

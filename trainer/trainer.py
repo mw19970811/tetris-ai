@@ -690,6 +690,106 @@ class Trainer:
 
 
 # ------------------------------------------------------------------ #
+#  Config printing
+# ------------------------------------------------------------------ #
+def _print_config(config: TrainingConfig, args):
+    """Print all configuration parameters before training starts.
+
+    All values originate from either the TrainingConfig dataclass defaults
+    or CLI args — no other source.
+    """
+    derived = config.total_steps
+
+    def _kv(k, v, indent=2):
+        return f"{' ' * indent}{k:24s} = {v}"
+
+    print("=" * 60)
+    print("  Training Configuration")
+    print("=" * 60)
+
+    print("  ── Training ──")
+    print(_kv("algorithm", config.algorithm))
+    print(_kv("total_samples", f"{config.total_samples:,}"))
+    print(_kv("total_steps", f"{derived:,}  (derived)"))
+    print(_kv("num_envs", config.num_envs))
+    print(_kv("eval_every", f"{config.eval_every:,}"))
+    print(_kv("eval_episodes", config.eval_episodes))
+    print(_kv("save_every", f"{config.save_every:,}"))
+    print(_kv("log_every", config.log_every))
+    print(_kv("device", config.device))
+    print(_kv("seed", config.seed))
+    print(_kv("use_wandb", config.use_wandb))
+    print(_kv("use_pretrain", config.use_pretrain))
+    print(_kv("checkpoint_dir", config.checkpoint_dir))
+    print(_kv("checkpoint_keep_best", config.checkpoint_keep_best))
+    print(_kv("checkpoint_keep_latest", config.checkpoint_keep_latest))
+    print(_kv("num_pretrain_episodes", config.num_pretrain_episodes))
+    print(_kv("num_pretrain_envs", config.num_pretrain_envs))
+    print(_kv("pretrain_epochs", config.pretrain_epochs))
+
+    print("  ── Environment ──")
+    env = config.env
+    print(_kv("cols", env.cols))
+    print(_kv("rows", env.rows))
+    print(_kv("hidden_rows", env.hidden_rows))
+    print(_kv("next_queue_size", env.next_queue_size))
+    print(_kv("bag_type", env.bag_type))
+    print(_kv("max_steps", f"{env.max_steps:,}"))
+    print(_kv("use_cpp_env", env.use_cpp_env))
+    print("  reward_weights:")
+    for k, v in env.reward_weights.items():
+        print(f"    {k:22s} = {v}")
+
+    print("  ── Network ──")
+    net = config.network
+    print(_kv("cnn_channels", net.cnn_channels))
+    print(_kv("hidden_dim", net.hidden_dim))
+    print(_kv("feature_dim", net.feature_dim))
+    print(_kv("num_actions", net.num_actions))
+    print(_kv("use_noisy", net.use_noisy))
+    print(_kv("sigma_init", net.sigma_init))
+    print(_kv("sigma_decay", net.sigma_decay))
+
+    print(f"  ── {config.algorithm.upper()} ──")
+    if config.algorithm == "dqn":
+        dqn = config.dqn
+        print(_kv("gamma", dqn.gamma))
+        print(_kv("lr", dqn.lr))
+        print(_kv("batch_size", dqn.batch_size))
+        print(_kv("train_every", dqn.train_every))
+        print(_kv("n_step", dqn.n_step))
+        print(_kv("target_update_freq", f"{dqn.target_update_freq:,}"))
+        print(_kv("target_update_tau", dqn.target_update_tau))
+        print(_kv("use_hard_update", dqn.use_hard_update))
+        print(_kv("replay_capacity", f"{dqn.replay_capacity:,}"))
+        print(_kv("per_alpha", dqn.per_alpha))
+        print(_kv("per_beta_start", dqn.per_beta_start))
+        print(_kv("per_beta_end", dqn.per_beta_end))
+        print(_kv("per_beta_frames", f"{dqn.per_beta_frames:,}"))
+        print(_kv("grad_clip_norm", dqn.grad_clip_norm))
+    else:
+        ppo = config.ppo
+        print(_kv("gamma", ppo.gamma))
+        print(_kv("gae_lambda", ppo.gae_lambda))
+        print(_kv("clip_epsilon", ppo.clip_epsilon))
+        print(_kv("value_coef", ppo.value_coef))
+        print(_kv("entropy_coef", ppo.entropy_coef))
+        print(_kv("lr", ppo.lr))
+        print(_kv("batch_size", ppo.batch_size))
+        print(_kv("mini_batch_size", ppo.mini_batch_size))
+        print(_kv("n_epochs", ppo.n_epochs))
+        print(_kv("max_grad_norm", ppo.max_grad_norm))
+        print(_kv("rollout_steps", f"{ppo.rollout_steps:,}"))
+        print(_kv("num_envs", ppo.num_envs))
+
+    print("  ── CLI args ──")
+    for k, v in sorted(vars(args).items()):
+        print(_kv(k, v))
+
+    print("=" * 60)
+
+
+# ------------------------------------------------------------------ #
 #  Entry point
 # ------------------------------------------------------------------ #
 def create_trainer(config_dict: Optional[dict] = None) -> Trainer:
@@ -746,10 +846,8 @@ def main():
     if args.steps is not None:
         config.total_steps = args.steps
 
-    derived = config.total_steps
-    print(f"[Config] total_samples={config.total_samples:,}  "
-          f"batch_size={config.dqn.batch_size}  train_every={config.dqn.train_every}  "
-          f"→ total_steps={derived:,}")
+    _print_config(config, args)
+
     trainer = Trainer(config, resume=args.resume, resume_from=args.resume_from,
                      profile=args.profile)
     trainer.train()
