@@ -49,7 +49,7 @@ class DQNConfig:
     target_update_tau: float = 0.001  # Polyak averaging coefficient per training step
     use_hard_update: bool = True  # Soft sync (Polyak) every step; periodic hard anchor sync
     replay_capacity: int = 2_000_000  # Larger buffer for batch_size=256 (~4.4 GB RAM)
-    per_alpha: float = 0.4  # Lower α → less extreme TD prioritisation (was 0.8)
+    per_alpha: float = 0.3  # Low α → near-uniform sampling, prevents death domination
     per_beta_start: float = 0.4
     per_beta_end: float = 1.0
     per_beta_frames: int = 3_000_000  # β anneals to 1.0 at ~77 % of total training updates

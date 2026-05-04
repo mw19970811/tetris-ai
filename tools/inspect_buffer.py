@@ -251,7 +251,30 @@ def load_buffer(path: str) -> dict:
         print(f"Error: file not found: {path}")
         sys.exit(1)
 
-    buf = torch.load(path, map_location="cpu", weights_only=False)
+    file_size = os.path.getsize(path)
+    if file_size < 1024:
+        print(f"Error: file is too small ({file_size} bytes) — likely truncated or corrupt.")
+        sys.exit(1)
+
+    try:
+        buf = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as e:
+        print(f"Error: failed to load buffer file: {e}")
+        print(f"  File: {path}  ({file_size / 1024**2:.1f} MB)")
+        print(f"  The file may be truncated (training interrupted mid-save).")
+        print(f"  Try an earlier checkpoint, e.g.:")
+        import re
+        m = re.search(r'step_(\d+)_buffer', os.path.basename(path))
+        if m:
+            step = int(m.group(1))
+            prev = max(step - 20000, 0)
+            alt = path.replace(f'step_{step:09d}', f'step_{prev:09d}')
+            print(f"    python tools/inspect_buffer.py {alt}")
+        sys.exit(1)
+
+    if not isinstance(buf, dict):
+        print(f"Error: unexpected buffer format (got {type(buf).__name__}, expected dict).")
+        sys.exit(1)
     return buf
 
 
@@ -389,23 +412,25 @@ class BufferViewer:
 
     def _rebuild_filter(self):
         """Build list of visible indices based on current filter."""
-        visible = []
-        for i, (t, _p) in enumerate(self.entries):
-            if self._filter_mode == "all":
-                visible.append(i)
-            elif self._filter_mode == "done":
-                if t.done:
-                    visible.append(i)
-            elif self._filter_mode == "live":
-                if not t.done:
-                    visible.append(i)
-            elif self._filter_mode == "reward+":
-                if t.reward > 0:
-                    visible.append(i)
-            elif self._filter_mode == "reward-":
-                if t.reward < 0:
-                    visible.append(i)
-        self._visible = visible
+        if self._filter_mode == "all":
+            self._visible = list(range(self.total))
+        elif self._filter_mode == "done":
+            self._visible = [i for i, (t, _) in enumerate(self.entries) if t.done]
+        elif self._filter_mode == "live":
+            self._visible = [i for i, (t, _) in enumerate(self.entries) if not t.done]
+        elif self._filter_mode == "reward+":
+            self._visible = [i for i in range(self.total) if self._rewards[i] > 0]
+        elif self._filter_mode == "reward-":
+            self._visible = [i for i in range(self.total) if self._rewards[i] < 0]
+        elif self._filter_mode == "top-reward":
+            self._visible = sorted(range(self.total),
+                                   key=lambda i: self._rewards[i], reverse=True)
+        elif self._filter_mode == "top-prio":
+            self._visible = sorted(range(self.total),
+                                   key=lambda i: self._priorities[i], reverse=True)
+        else:
+            self._visible = list(range(self.total))
+
         if not self._visible:
             self._visible = [0]
         self._cursor = max(0, min(self._cursor, len(self._visible) - 1))
@@ -448,8 +473,11 @@ class BufferViewer:
         self._cursor = len(self._visible) - 1
 
     def cycle_filter(self):
-        modes = ["all", "done", "live", "reward+", "reward-"]
-        cur = modes.index(self._filter_mode)
+        modes = ["all", "done", "live", "reward+", "reward-", "top-reward", "top-prio"]
+        try:
+            cur = modes.index(self._filter_mode)
+        except ValueError:
+            cur = 0
         self._filter_mode = modes[(cur + 1) % len(modes)]
         self._rebuild_filter()
 
@@ -555,9 +583,34 @@ def render_viewer(viewer: BufferViewer) -> str:
         f"  Rewards: +{pos_count:,}  -{neg_count:,}  ={zero_count:,}"
         f"    range [{viewer._rewards.min():+.1f}, {viewer._rewards.max():+.1f}]"
     )
+    # IS weight colour coding.
+    weight = viewer._weight(idx)
+    if weight > 1.0:
+        w_color, w_label = GREEN, f"x{weight:.2f}"
+    elif weight > 0.1:
+        w_color, w_label = YELLOW, f"x{weight:.3f}"
+    else:
+        w_color, w_label = DIM, f"x{weight:.4f}"
+
+    # Rank info for sorted modes.
+    rank_str = ""
+    if viewer._filter_mode == "top-reward":
+        rank_str = f"    {GREEN}rank #{viewer._cursor + 1} by reward{RESET}"
+    elif viewer._filter_mode == "top-prio":
+        rank_str = f"    {GREEN}rank #{viewer._cursor + 1} by priority{RESET}"
+
     lines.append(
         f"  {BOLD}Transition #{idx:,} / {viewer.total - 1:,}"
-        f"    (visible: {viewer._cursor + 1} / {viewer.visible_count})"
+        f"    (visible: {viewer._cursor + 1} / {viewer.visible_count}){rank_str}"
+    )
+    # Compact reward + priority summary line.
+    r_color = GREEN if reward > 0 else (RED if reward < 0 else "")
+    pct = 100.0 * int((viewer._priorities >= priority).sum()) / viewer.total
+    lines.append(
+        f"  {BOLD}Reward:{RESET} {r_color}{reward:+.1f}{RESET}"
+        f"    {BOLD}Priority:{RESET} {priority:.4f}"
+        f"  (top {pct:.1f}%)"
+        f"    {BOLD}IS:{RESET} {w_color}{w_label}{RESET}"
     )
     lines.append(f"{BOLD}{'═' * 67}{RESET}")
 
@@ -575,23 +628,6 @@ def render_viewer(viewer: BufferViewer) -> str:
         f"  |  {BOLD}Reward:{RESET} {reward_color}{reward:+.1f}{RESET}"
         f"  |  {BOLD}Done:{RESET} {d['done']}"
     )
-    # Priority, sampling probability, IS multiplier
-    rank = int((viewer._priorities >= priority).sum())
-    pct = 100.0 * rank / viewer.total
-    weight = viewer._weight(idx)
-    if weight > 1.0:
-        w_color, w_label = GREEN, f"×{weight:.2f}"
-    elif weight > 0.1:
-        w_color, w_label = YELLOW, f"×{weight:.3f}"
-    else:
-        w_color, w_label = DIM, f"×{weight:.4f}"
-    lines.append(
-        f"  {BOLD}Priority:{RESET} {priority:>10.4f}  (rank {rank}/{viewer.total}, top {pct:.1f}%)"
-        f"    {BOLD}Prob:{RESET} {prob:.6f}"
-        f"    {BOLD}IS:{RESET} {w_color}{w_label}{RESET}"
-        f"  {DIM}(loss multiplier){RESET}"
-    )
-
     # Piece info
     bi = d["before_info"]
     lines.append(
@@ -627,9 +663,14 @@ def render_viewer(viewer: BufferViewer) -> str:
         f"  {DIM}[PgUp/PgDn]{RESET} ±10   "
         f"  {DIM}[Home/End]{RESET} first/last"
     )
+    fmode = viewer._filter_mode
+    if fmode in ("top-reward", "top-prio"):
+        fm_display = f"{GREEN}{fmode}{RESET}"
+    else:
+        fm_display = fmode
     lines.append(
         f"  {DIM}[g]{RESET} goto idx   "
-        f"  {DIM}[f]{RESET} filter: {viewer._filter_mode:<8}   "
+        f"  {DIM}[f]{RESET} filter: {fm_display:<14}"
         f"  {DIM}[r]{RESET} max reward   "
         f"  {DIM}[p]{RESET} max prio"
     )

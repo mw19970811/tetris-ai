@@ -38,13 +38,17 @@ class SumTree:
         self.write_pos = 0
         self.size = 0
 
-    def add(self, priority: float, data: Any):
-        """Add data with given priority, overwriting oldest if full."""
+    def add(self, priority: float, data: Any) -> int:
+        """Add data with given priority, overwriting oldest if full.
+
+        Returns the tree index of the new leaf.
+        """
         idx = self.write_pos + self.capacity - 1
         self.data[self.write_pos] = data
         self.update(idx, priority)
         self.write_pos = (self.write_pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
+        return idx
 
     def update(self, tree_idx: int, priority: float):
         """Update priority at given tree index."""
@@ -88,16 +92,19 @@ class SumTree:
 
 
 class PrioritizedReplayBuffer:
-    """PER buffer with blended TD+reward priority.
+    """PER buffer with newcomer guarantee + blended TD+reward priority.
 
-    Blend formula:
+    Two-stage design ensures every transition is sampled at least once:
+      1. Newcomer FIFO (capacity ~2000) — new transitions wait here.
+         Up to 50 % of each training batch is drawn from newcomers.
+      2. PER SumTree — transitions graduate here after being sampled once,
+         with their true priority computed from TD-error + reward.
+
+    Blended priority formula:
         priority = (1 - reward_blend) * |td|^alpha  +  reward_blend * |reward| * reward_weight
-
-    When reward_blend is high (e.g. 0.9), the reward signal dominates
-    sampling so line-clears are prioritised over high-TD-error deaths.
     """
 
-    def __init__(self, capacity: int = 1_000_000, alpha: float = 0.4,
+    def __init__(self, capacity: int = 1_000_000, alpha: float = 0.3,
                  beta_start: float = 0.4, beta_end: float = 1.0,
                  beta_frames: int = 10_000_000, epsilon: float = 1e-6,
                  reward_weight: float = 0.5, reward_blend: float = 0.9):
@@ -111,7 +118,13 @@ class PrioritizedReplayBuffer:
         self.reward_weight = reward_weight
         self.reward_blend = reward_blend
         self.max_priority = 1.0
-        self._init_priority = 1.0  # New transitions start at 1.0, not max
+        self._priority_ema = 1.0  # Running average of updated priorities
+        self._init_priority = 1.0  # Tracks EMA
+
+        # Newcomer FIFO — guarantees every transition gets sampled once.
+        self._newcomers: list = []          # list of StoredTransition
+        self._newcomer_capacity = 2000      # ~31 rounds at 64 envs/step
+        self._newcomer_ratio = 0.5          # fraction of batch drawn from newcomers
 
     def _compute_priority(self, td_error: float, reward: float = 0.0) -> float:
         """Blended priority: weighted mix of TD-based and reward-based."""
@@ -123,68 +136,90 @@ class PrioritizedReplayBuffer:
     def add(self, state: Tuple[np.ndarray, np.ndarray], action: int,
             reward: float, next_state: Tuple[np.ndarray, np.ndarray],
             done: bool, td_error: Optional[float] = None):
-        """Store transition with initial priority.
-
-        New transitions start at _init_priority (1.0) instead of
-        max_priority — this prevents fresh entries from dominating
-        sampling before their true TD-error is known.
-
-        state, next_state are (board, features) tuples.
+        """Store transition.  New entries go to the newcomer FIFO first;
+        overflow drains to the PER tree with EMA init_priority.
         """
-        if td_error is not None:
-            priority = self._compute_priority(td_error, reward)
-        else:
-            priority = self._init_priority
-
         trans = StoredTransition(
             board=state[0], features=state[1],
             action=action, reward=reward,
             next_board=next_state[0], next_features=next_state[1],
             done=done,
         )
-        self.tree.add(priority, trans)
+        self._newcomers.append(trans)
+
+        # Drain overflow to PER tree.
+        while len(self._newcomers) > self._newcomer_capacity:
+            old = self._newcomers.pop(0)
+            self.tree.add(self._init_priority, old)
 
     def sample(self, batch_size: int, step: int = 0
                ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray]:
-        """Sample a batch with importance sampling weights.
+        """Sample a batch mixing newcomers (guaranteed exposure) and PER tree.
 
-        Returns (batch_dict, indices, weights).
+        Up to ``newcomer_ratio`` of the batch comes from the newcomer FIFO
+        so every transition is trained on at least once.  Sampled newcomers
+        graduate to the PER tree so their priority can be updated.
         """
+        n_new = min(int(batch_size * self._newcomer_ratio), len(self._newcomers))
+        # Don't ask the tree for more than it has.
+        n_tree = min(batch_size - n_new, len(self.tree))
+        # If tree is too small, fill remaining from newcomers.
+        n_new = min(batch_size - n_tree, len(self._newcomers))
+
         batch = {
             "board": [], "features": [], "actions": [], "rewards": [],
             "next_board": [], "next_features": [], "dones": [],
         }
-        indices = np.zeros(batch_size, dtype=np.int32)
-        weights = np.zeros(batch_size, dtype=np.float32)
+        # Tree indices are negative for newcomers (distinguished in update_priorities).
+        indices = np.full(batch_size, -1, dtype=np.int32)
+        weights = np.ones(batch_size, dtype=np.float32)
 
-        total = self.tree.total()
-        if total == 0:
-            return batch, indices, weights
+        # === Newcomers: uniform random draw from FIFO ===
+        grad_indices = []  # tree indices of graduated newcomers
+        if n_new > 0:
+            picks = random.sample(range(len(self._newcomers)), n_new)
+            picks.sort(reverse=True)
+            batch_positions = []  # which batch slot each newcomer fills
+            for p in picks:
+                t = self._newcomers.pop(p)
+                batch["board"].append(t.board)
+                batch["features"].append(t.features)
+                batch["actions"].append(t.action)
+                batch["rewards"].append(t.reward)
+                batch["next_board"].append(t.next_board)
+                batch["next_features"].append(t.next_features)
+                batch["dones"].append(t.done)
+                # Graduate to PER tree; record tree index for update_priorities.
+                tree_idx = self.tree.add(self._init_priority, t)
+                grad_indices.append(tree_idx)
 
-        segment = total / batch_size
-        beta = self._beta(step)
+            # Fill indices for newcomer slots.
+            for i, ti in enumerate(grad_indices):
+                indices[i] = ti
 
-        for i in range(batch_size):
-            s = random.uniform(segment * i, segment * (i + 1))
-            idx, priority, data = self.tree.get(s)
+        # === PER tree ===
+        tree_total = self.tree.total()
+        if n_tree > 0 and tree_total > 0 and len(self.tree) > 0:
+            segment = tree_total / n_tree
+            beta = self._beta(step)
+            for i in range(n_tree):
+                s = random.uniform(segment * i, segment * (i + 1))
+                tree_idx, priority, data = self.tree.get(s)
+                if data is None:
+                    continue
+                prob = priority / tree_total
+                w = (len(self.tree) * prob) ** (-beta)
+                weights[n_new + i] = w
+                indices[n_new + i] = tree_idx
+                batch["board"].append(data.board)
+                batch["features"].append(data.features)
+                batch["actions"].append(data.action)
+                batch["rewards"].append(data.reward)
+                batch["next_board"].append(data.next_board)
+                batch["next_features"].append(data.next_features)
+                batch["dones"].append(data.done)
 
-            if data is None:
-                continue
-
-            prob = priority / total
-            weight = (len(self.tree) * prob) ** (-beta)
-            weights[i] = weight
-
-            batch["board"].append(data.board)
-            batch["features"].append(data.features)
-            batch["actions"].append(data.action)
-            batch["rewards"].append(data.reward)
-            batch["next_board"].append(data.next_board)
-            batch["next_features"].append(data.next_features)
-            batch["dones"].append(data.done)
-            indices[i] = idx
-
-        # Normalise weights.
+        # Normalise IS weights.
         max_w = np.max(weights) if np.max(weights) > 0 else 1.0
         weights = weights / max_w
 
@@ -201,13 +236,24 @@ class PrioritizedReplayBuffer:
 
     def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray,
                           rewards: Optional[np.ndarray] = None):
-        """Update priorities using hybrid TD+reward priority."""
+        """Update priorities using blended TD+reward priority.
+
+        Also tracks EMA of priorities so new transitions get a fair
+        initial priority (not stuck at 1.0 in a pool of 88.75).
+        """
         if rewards is None:
             rewards = np.zeros_like(td_errors)
+        batch_mean = 0.0
         for idx, td_error, reward in zip(indices, td_errors, rewards):
             priority = self._compute_priority(float(td_error), float(reward))
             self.max_priority = max(self.max_priority, priority)
             self.tree.update(int(idx), priority)
+            batch_mean += priority
+        batch_mean /= max(len(indices), 1)
+
+        # EMA tracking — smooth factor 0.01 balances recency vs stability.
+        self._priority_ema = 0.99 * self._priority_ema + 0.01 * batch_mean
+        self._init_priority = max(self._priority_ema, 1.0)
 
     def _beta(self, step: int) -> float:
         """Linearly anneal beta from start to end."""
@@ -230,6 +276,8 @@ class PrioritizedReplayBuffer:
             "epsilon": self.epsilon,
             "reward_weight": self.reward_weight,
             "reward_blend": self.reward_blend,
+            "priority_ema": self._priority_ema,
+            "newcomers": self._newcomers,
         }
 
     def load_state_dict(self, state: dict):
@@ -243,7 +291,9 @@ class PrioritizedReplayBuffer:
         self.reward_weight = state.get("reward_weight", 0.5)
         self.reward_blend = state.get("reward_blend", 0.9)
         self.max_priority = state["max_priority"]
-        self._init_priority = 1.0
+        self._priority_ema = state.get("priority_ema", self.max_priority)
+        self._init_priority = max(self._priority_ema, 1.0)
+        self._newcomers = state.get("newcomers", [])
         self.tree = SumTree(self.capacity)
         # Restore tree data — pad/truncate to match capacity.
         n = min(len(state["tree_data"]), self.capacity)
@@ -254,7 +304,7 @@ class PrioritizedReplayBuffer:
         self.tree.size = min(state["tree_size"], self.capacity)
 
     def __len__(self) -> int:
-        return len(self.tree)
+        return len(self.tree) + len(self._newcomers)
 
 
 class UniformReplayBuffer:

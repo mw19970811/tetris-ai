@@ -32,7 +32,7 @@ dqn:
   target_update_tau: 0.001     # Polyak averaging coefficient per training step
   use_hard_update: true       # Soft sync (Polyak) every step; true = hard sync
   replay_capacity: 2_000_000   # ~4.4 GB RAM for float32 transitions
-  per_alpha: 0.4               # PER alpha (lower = less extreme TD prioritisation)
+  per_alpha: 0.3               # PER alpha (low = near-uniform, prevents death domination)
   per_beta_start: 0.4          # IS correction start
   per_beta_end: 1.0            # IS correction end
   per_beta_frames: 3_000_000   # beta anneals to 1.0 over this many training steps

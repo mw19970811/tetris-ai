@@ -17,6 +17,12 @@ from collections import deque
 from env.tetris_env import Action
 from agent.action_mask import decode_action
 
+# ANSI colours for inline health indicators.
+_RED = "\033[31m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_RESET = "\033[0m"
+
 
 def _fmt_duration(seconds: float) -> str:
     """Format seconds as HH:MM:SS or MM:SS."""
@@ -502,11 +508,14 @@ class Trainer:
                     )
 
                 # Collect latest training metrics for progress line + TensorBoard.
-                last_w_mean = last_prio_mean = last_rw_prio = 0.0
+                last_w_mean = last_prio_mean = last_rw_prio = last_init_prio = 0.0
+                last_newcomers = 0
                 if hasattr(self, '_last_train_metrics') and self._last_train_metrics:
                     last_w_mean = self._last_train_metrics.get("w_mean", 0)
                     last_prio_mean = self._last_train_metrics.get("prio_mean", 0)
                     last_rw_prio = self._last_train_metrics.get("rw_prio_mean", 0)
+                    last_init_prio = self._last_train_metrics.get("init_prio", 0)
+                    last_newcomers = self._last_train_metrics.get("newcomers", 0)
 
                 self.logger.log_train_step(
                     step, avg_reward=avg_reward, avg_lines=avg_lines,
@@ -521,19 +530,26 @@ class Trainer:
                 print(f"\r[{_timestamp()}]  "
                       f"Step {step:>9,}/{total_steps:,} ({progress:.1%})  "
                       f"|  Avg100R: {avg_reward:>10,.1f}  "
+                      f"|  Steps: {avg_steps:>5.0f}/ep  "
                       f"|  Pieces: {avg_pieces:>5.0f}/ep  "
-                      f"|  Steps: {avg_steps:>6.0f}/ep  "
+                      f"|  Dead: {dead_count:>5} ({dead_rate:.0f}%)  "
                       f"|  Sigma: {sigma_mean:.5f}  "
-                      f"|  Stale: {dead_count:>5}  "
-                      f"|  FPS: {fps:>8,.0f}  "
-                      f"|  Elapsed: {_fmt_duration(elapsed)}  "
-                      f"|  ETA: {_fmt_duration(eta)}", end="")
-                # Second line: PER priority / weight stats.
+                      f"|  FPS: {fps:>7,.0f}", end="")
+                # PER diagnostics line.
                 if last_prio_mean > 0:
-                    print(f"\n  {'':16s}"
-                          f"  W: {last_w_mean:.3f}  "
-                          f"  TD-prio: {last_prio_mean:.1f}  "
-                          f"  R-prio: {last_rw_prio:.1f}", end="")
+                    ratio = last_prio_mean / max(last_rw_prio, 0.001)
+                    if ratio > 50:
+                        health = f"{_RED}TD>>RW ({ratio:.0f}x) - death-dominated!{_RESET}"
+                    elif ratio > 10:
+                        health = f"{_YELLOW}TD>RW ({ratio:.0f}x){_RESET}"
+                    else:
+                        health = f"{_GREEN}OK ({ratio:.1f}x){_RESET}"
+                    print(f"\n  PER:  W={last_w_mean:.3f}"
+                          f"  TD-prio={last_prio_mean:.1f}"
+                          f"  R-prio={last_rw_prio:.1f}"
+                          f"  init={last_init_prio:.1f}"
+                          f"  new={last_newcomers}"
+                          f"  |  {health}", end="")
                 # Profiler breakdown line.
                 report = self.profiler.report(step, elapsed, self.num_envs)
                 if report:

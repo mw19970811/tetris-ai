@@ -41,7 +41,7 @@ class RainbowDQN:
                  target_update_tau: float = 0.001,
                  use_hard_update: bool = False,
                  replay_capacity: int = 1_000_000,
-                 per_alpha: float = 0.4,
+                 per_alpha: float = 0.3,
                  per_beta_start: float = 0.4,
                  per_beta_end: float = 1.0,
                  per_beta_frames: int = 10_000_000,
@@ -254,6 +254,8 @@ class RainbowDQN:
             "rw_prio_mean": reward_priorities.mean().item(),
             "rw_prio_max": reward_priorities.max().item(),
             "reward_mean": rewards.mean().item(),
+            "init_prio": float(self.memory._init_priority),
+            "newcomers": len(self.memory._newcomers),
         }
         if sync_event is not None:
             metrics["target_sync"] = sync_event
