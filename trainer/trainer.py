@@ -672,23 +672,49 @@ class Trainer:
     def _pretrain(self):
         """Pretrain using Dellacherie behavior cloning.
 
-        Fast path: if a previously saved pretrained weights file exists,
-        load it directly — no data collection, no BC training.
+        Fast path: if a previously saved pretrained weights file exists
+        AND its model_size matches the current config, load it directly.
+        Otherwise, delete stale cache and retrain from scratch.
         """
         from agent.pretrain import Pretrainer
         import os as _os
+        import json as _json
 
         weights_path = _os.path.join("pretrain_samples", "pretrained_weights.pt")
+        meta_path = _os.path.join("pretrain_samples", "pretrained_meta.json")
 
-        # --- Fast path: load cached pretrained weights ---
+        # --- Fast path: load cached pretrained weights if compatible ---
         if _os.path.exists(weights_path):
-            print(f"[Pretrain] Loading cached pretrained weights from {weights_path} ...")
-            converted = torch.load(weights_path, map_location="cpu")
-            if self.cfg.algorithm == "dqn" and hasattr(self.agent, 'online_net'):
-                self.agent.online_net.load_state_dict(converted)
-                self.agent.target_net.load_state_dict(converted)
-            print("[Pretrain] Skipped data collection + BC training (cached weights loaded).")
-            return
+            current_size = self.cfg.network.model_size
+            cached_size = None
+            if _os.path.exists(meta_path):
+                try:
+                    with open(meta_path) as f:
+                        cached_size = _json.load(f).get("model_size")
+                except Exception:
+                    pass
+
+            if cached_size == current_size:
+                print(f"[Pretrain] Loading cached pretrained weights from {weights_path} ...")
+                converted = torch.load(weights_path, map_location="cpu")
+                try:
+                    if self.cfg.algorithm == "dqn" and hasattr(self.agent, 'online_net'):
+                        self.agent.online_net.load_state_dict(converted)
+                        self.agent.target_net.load_state_dict(converted)
+                    print("[Pretrain] Skipped data collection + BC training "
+                          f"(cached weights loaded, model_size={current_size}).")
+                    return
+                except RuntimeError as e:
+                    print(f"[Pretrain] Cached weights incompatible: {e}")
+                    print("[Pretrain] Deleting stale cache and retraining...")
+            else:
+                print(f"[Pretrain] model_size changed ({cached_size} → {current_size})"
+                      f" — cache invalid, retraining...")
+
+            # Delete stale cache.
+            for p in [weights_path, meta_path]:
+                if _os.path.exists(p):
+                    _os.remove(p)
 
         # --- Full path: collect + train + cache ---
         pretrainer = Pretrainer(model_type="dqn", num_actions=self.cfg.network.num_actions,
@@ -741,10 +767,13 @@ class Trainer:
             self.agent.online_net.load_state_dict(converted)
             self.agent.target_net.load_state_dict(converted)
 
-            # Cache the converted weights so next run can skip everything.
+            # Cache the converted weights + metadata so next run can skip.
             _os.makedirs("pretrain_samples", exist_ok=True)
             torch.save(converted, weights_path)
-            print(f"[Pretrain] Cached pretrained weights to {weights_path}.")
+            with open(meta_path, "w") as f:
+                _json.dump({"model_size": self.cfg.network.model_size}, f)
+            print(f"[Pretrain] Cached pretrained weights to {weights_path} "
+                  f"(model_size={self.cfg.network.model_size}).")
             print("[Pretrain] Loaded pretrained weights into online + target networks.")
 
     # ------------------------------------------------------------------ #
