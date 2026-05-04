@@ -119,6 +119,7 @@ class PrioritizedReplayBuffer:
         self.reward_clip = reward_clip
         self.max_priority = 1.0
         self._priority_ema = 1.0  # Monitoring: running average of updated priorities
+        self._update_count = 0
 
     @staticmethod
     def _clamp_reward(r: float, clip: float) -> float:
@@ -217,22 +218,48 @@ class PrioritizedReplayBuffer:
 
         return batch, indices, weights
 
+    def _refresh_max_priority(self):
+        """Recompute max_priority from the SumTree leaves.
+
+        Called periodically so ``max_priority`` reflects the *current*
+        buffer, not a stale spike from early training.
+        """
+        if self.tree.size == 0:
+            self.max_priority = 1.0
+            return
+        leaf_start = self.capacity - 1
+        leaf_end = leaf_start + self.tree.size
+        leaves = self.tree.tree[leaf_start:leaf_end]
+        # Only active leaves (data not None) have priority > 0.
+        active = leaves[leaves > 0]
+        self.max_priority = float(np.max(active)) if len(active) > 0 else 1.0
+
     def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray,
                           rewards: Optional[np.ndarray] = None):
         """Update priorities using blended TD+reward priority.
 
-        ``max_priority`` is updated so new transitions enter with the
-        current ceiling.  EMA is tracked for monitoring only.
+        ``max_priority`` tracks the batch ceiling every step, and is
+        periodically recalibrated from the full SumTree so it stays
+        representative of the current buffer.
         """
         if rewards is None:
             rewards = np.zeros_like(td_errors)
         batch_mean = 0.0
+        batch_max = 0.0
         for idx, td_error, reward in zip(indices, td_errors, rewards):
             priority = self._compute_priority(float(td_error), float(reward))
-            self.max_priority = max(self.max_priority, priority)
             self.tree.update(int(idx), priority)
             batch_mean += priority
+            batch_max = max(batch_max, priority)
         batch_mean /= max(len(indices), 1)
+
+        # Track batch max (prevents stale spikes).
+        self.max_priority = max(self.max_priority, batch_max)
+
+        # Every 100 steps, recalibrate from full tree.
+        self._update_count += 1
+        if self._update_count % 100 == 0:
+            self._refresh_max_priority()
 
         self._priority_ema = 0.99 * self._priority_ema + 0.01 * batch_mean
 
