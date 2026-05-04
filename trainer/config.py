@@ -42,7 +42,7 @@ class NetworkConfig:
 class DQNConfig:
     gamma: float = 0.99
     n_step: int = 5
-    lr: float = 2.5e-5  # 10× lower than typical — prevents online drift between hard syncs
+    lr: float = 2.5e-4  # 10× lower than typical — prevents online drift between hard syncs
     batch_size: int = 256
     train_every: int = 4
     target_update_freq: int = 4000  # Periodic anchor hard-sync interval (for soft-sync mode)

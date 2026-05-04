@@ -25,7 +25,7 @@ training:
 dqn:
   gamma: 0.99
   n_step: 5
-  lr: 2.5e-5           # Conservative lr -- prevents online drift with soft sync
+  lr: 2.5e-4           # Conservative lr -- prevents online drift with soft sync
   batch_size: 256
   train_every: 4        # Train every N environment steps
   target_update_freq: 4000     # Anchor hard-sync interval (soft-sync mode)

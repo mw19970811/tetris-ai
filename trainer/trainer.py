@@ -94,6 +94,7 @@ class Trainer:
         self.episode_steps = deque(maxlen=100)
         self.best_avg_score = 0.0
         self._last_ckpt_metrics: Dict = {}  # Previous checkpoint's eval for delta comparison
+        self._last_train_metrics: Dict = {}  # Latest training step metrics for progress line
 
         # Resume state.
         self.resume_step = 0
@@ -467,8 +468,10 @@ class Trainer:
                 if self.cfg.algorithm == "dqn":
                     if self.agent.env_step % self.agent.train_every == 0:
                         metrics = self.agent.update()
-                        if metrics and self.agent.train_step % self.cfg.log_every == 0:
-                            self.logger.log_train(self.agent.env_step, **metrics)
+                        if metrics:
+                            self._last_train_metrics = metrics
+                            if self.agent.train_step % self.cfg.log_every == 0:
+                                self.logger.log_train(self.agent.env_step, **metrics)
                 else:
                     if len(self.agent.buffer) >= self.cfg.ppo.rollout_steps:
                         metrics = self.agent.update()
@@ -504,7 +507,16 @@ class Trainer:
                     dead_count=dead_count, dead_rate=dead_rate,
                     avg_pieces=avg_pieces, avg_score=avg_score,
                     avg_steps=avg_steps, sigma_mean=sigma_mean,
+                    w_mean=last_w_mean, td_prio_mean=last_prio_mean,
+                    rw_prio_mean=last_rw_prio,
                 )
+
+                # Collect latest training metrics for the progress line.
+                last_w_mean = last_prio_mean = last_rw_prio = 0.0
+                if hasattr(self, '_last_train_metrics'):
+                    last_w_mean = self._last_train_metrics.get("w_mean", 0)
+                    last_prio_mean = self._last_train_metrics.get("prio_mean", 0)
+                    last_rw_prio = self._last_train_metrics.get("rw_prio_mean", 0)
 
                 print(f"\r[{_timestamp()}]  "
                       f"Step {step:>9,}/{total_steps:,} ({progress:.1%})  "
@@ -516,6 +528,12 @@ class Trainer:
                       f"|  FPS: {fps:>8,.0f}  "
                       f"|  Elapsed: {_fmt_duration(elapsed)}  "
                       f"|  ETA: {_fmt_duration(eta)}", end="")
+                # Second line: PER priority / weight stats.
+                if last_prio_mean > 0:
+                    print(f"\n  {'':16s}"
+                          f"  W: {last_w_mean:.3f}  "
+                          f"  TD-prio: {last_prio_mean:.1f}  "
+                          f"  R-prio: {last_rw_prio:.1f}", end="")
                 # Profiler breakdown line.
                 report = self.profiler.report(step, elapsed, self.num_envs)
                 if report:

@@ -236,12 +236,22 @@ class RainbowDQN:
                     module.scale_sigma(self.sigma_decay)
                     sigma_mean += module.get_sigma_mean()
 
+        # ---- metrics ----
+        new_priorities = td_errors.abs().detach() ** self.memory.alpha
+        reward_priorities = rewards.abs() * self.memory.reward_weight
         metrics = {
             "q_loss": loss.item(),
             "q_mean": current_q.mean().item(),
             "q_max": current_q.max().item(),
             "td_error_mean": td_errors.abs().mean().item(),
             "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
+            "w_mean": weights.mean().item(),
+            "w_max": weights.max().item(),
+            "prio_mean": new_priorities.mean().item(),
+            "prio_max": new_priorities.max().item(),
+            "rw_prio_mean": reward_priorities.mean().item(),
+            "rw_prio_max": reward_priorities.max().item(),
+            "reward_mean": rewards.mean().item(),
         }
         if sync_event is not None:
             metrics["target_sync"] = sync_event
