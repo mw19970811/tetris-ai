@@ -167,66 +167,129 @@ class PrioritizedReplayBuffer:
 
     def sample(self, batch_size: int, step: int = 0
                ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray]:
-        """Sample a batch with importance sampling weights."""
-        batch = {
-            "board": [], "features": [], "actions": [], "rewards": [],
-            "next_board": [], "next_features": [], "dones": [],
-        }
-        indices = np.zeros(batch_size, dtype=np.int32)
-        weights = np.zeros(batch_size, dtype=np.float32)
+        """Sample a batch mixing PER (80 %) and uniform (20 %) draws.
+
+        IS weights are corrected for the mixed sampling distribution:
+            P(i) = 0.8 * P_per(i) + 0.2 * (1/N)
+            w_i = (1 / (N * P(i)))^beta
+        """
+        tree_len = len(self.tree)
+        if tree_len == 0:
+            return (
+                {"board": [], "features": [], "actions": [], "rewards": [],
+                 "next_board": [], "next_features": [], "dones": []},
+                np.zeros(0, dtype=np.int32),
+                np.zeros(0, dtype=np.float32),
+            )
 
         total = self.tree.total()
-        if total == 0 or len(self.tree) == 0:
-            return batch, indices, weights
+        if total == 0:
+            total = 1.0
 
-        segment = total / batch_size
+        n_uniform = max(1, int(batch_size * 0.2))
+        n_per = batch_size - n_uniform
         beta = self._beta(step)
-        seen = set()  # deduplicate within batch
 
-        for i in range(batch_size):
-            # Stratified sampling over cumulative priority.  Retry until
-            # a non-None, non-duplicate sample is found.  In the worst
-            # case (tiny buffer), fall back to a global random search.
-            data = None
-            for attempt in range(50):
-                if attempt < 10:
-                    # Stratified: stay within segment i.
-                    s = random.uniform(segment * i, segment * (i + 1))
-                else:
-                    # Fallback: global random (segment exhausted).
-                    s = random.uniform(0, total)
-                idx, priority, data = self.tree.get(s)
+        # Pre-allocate with known capacity.
+        boards, feats, acts, rews = [], [], [], []
+        nxt_boards, nxt_feats, dones_list = [], [], []
+        indices = np.empty(batch_size, dtype=np.int32)
+        weights = np.empty(batch_size, dtype=np.float32)
+        seen = set()
+        pos = 0
+
+        # === PER stratified sampling (80 %) ===
+        # Vectorised random values — one per PER slot.
+        per_rand = np.random.uniform(0, total / n_per, n_per)
+        per_offsets = np.arange(n_per, dtype=np.float64) * (total / n_per)
+        per_queries = per_rand + per_offsets
+
+        for i in range(n_per):
+            s = float(per_queries[i])
+            idx, priority, data = self.tree.get(s)
+            # Dedup: retry within same segment (rare with 2M buffer).
+            for _ in range(15):
                 if data is not None and idx not in seen:
                     break
-
+                s = random.uniform(per_offsets[i], per_offsets[i] + total / n_per)
+                idx, priority, data = self.tree.get(s)
+            if data is None or idx in seen:
+                continue
             seen.add(idx)
-            prob = priority / total
-            weight = (len(self.tree) * prob) ** (-beta)
-            weights[i] = weight
 
-            batch["board"].append(data.board)
-            batch["features"].append(data.features)
-            batch["actions"].append(data.action)
-            batch["rewards"].append(data.reward)
-            batch["next_board"].append(data.next_board)
-            batch["next_features"].append(data.next_features)
-            batch["dones"].append(data.done)
-            indices[i] = idx
+            prob_per = priority / total
+            prob_mix = 0.8 * prob_per + 0.2 / tree_len
+            weights[pos] = (tree_len * prob_mix) ** (-beta)
+            indices[pos] = idx
+            boards.append(data.board)
+            feats.append(data.features)
+            acts.append(data.action)
+            rews.append(data.reward)
+            nxt_boards.append(data.next_board)
+            nxt_feats.append(data.next_features)
+            dones_list.append(data.done)
+            pos += 1
+
+        # === Uniform sampling (20 %) ===
+        # Vectorised random data indices (5× oversample for dedup margin).
+        cap = self.capacity
+        data_indices = np.random.randint(0, cap, n_uniform * 5)
+        ui = 0
+        while pos < batch_size and ui < len(data_indices):
+            data_idx = int(data_indices[ui]); ui += 1
+            data = self.tree.data[data_idx]
+            if data is None:
+                continue
+            tree_idx = data_idx + cap - 1
+            if tree_idx in seen:
+                continue
+            seen.add(tree_idx)
+
+            prob_mix = 0.8 * 0.0 + 0.2 / tree_len  # PER prob ≈ 0 for uniform
+            weights[pos] = (tree_len * prob_mix) ** (-beta)
+            indices[pos] = tree_idx
+            boards.append(data.board)
+            feats.append(data.features)
+            acts.append(data.action)
+            rews.append(data.reward)
+            nxt_boards.append(data.next_board)
+            nxt_feats.append(data.next_features)
+            dones_list.append(data.done)
+            pos += 1
+
+        # If uniform slots couldn't fill (e.g. buffer not yet full),
+        # backfill remaining with PER global draws.
+        while pos < batch_size:
+            s = random.uniform(0, total)
+            idx, priority, data = self.tree.get(s)
+            if data is None or idx in seen:
+                continue
+            seen.add(idx)
+            prob_per = priority / total
+            prob_mix = 0.8 * prob_per + 0.2 / tree_len
+            weights[pos] = (tree_len * prob_mix) ** (-beta)
+            indices[pos] = idx
+            boards.append(data.board); feats.append(data.features)
+            acts.append(data.action); rews.append(data.reward)
+            nxt_boards.append(data.next_board); nxt_feats.append(data.next_features)
+            dones_list.append(data.done)
+            pos += 1
 
         # Normalise IS weights.
-        max_w = np.max(weights) if np.max(weights) > 0 else 1.0
-        weights = weights / max_w
+        if pos > 0:
+            weights[:pos] /= np.max(weights[:pos])
 
-        # Stack.
-        batch["board"] = np.stack(batch["board"])
-        batch["features"] = np.stack(batch["features"])
-        batch["actions"] = np.array(batch["actions"], dtype=np.int64)
-        batch["rewards"] = np.array(batch["rewards"], dtype=np.float32)
-        batch["next_board"] = np.stack(batch["next_board"])
-        batch["next_features"] = np.stack(batch["next_features"])
-        batch["dones"] = np.array(batch["dones"], dtype=bool)
-
-        return batch, indices, weights
+        # Stack (trim to actually filled slots).
+        batch = {
+            "board": np.stack(boards),
+            "features": np.stack(feats),
+            "actions": np.array(acts, dtype=np.int64),
+            "rewards": np.array(rews, dtype=np.float32),
+            "next_board": np.stack(nxt_boards),
+            "next_features": np.stack(nxt_feats),
+            "dones": np.array(dones_list, dtype=bool),
+        }
+        return batch, indices[:pos], weights[:pos]
 
     def _refresh_max_priority(self):
         """Recompute max_priority from the SumTree leaves.
