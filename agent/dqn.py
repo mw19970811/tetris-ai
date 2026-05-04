@@ -47,6 +47,7 @@ class RainbowDQN:
                  per_beta_frames: int = 10_000_000,
                  per_reward_weight: float = 0.5,
                  per_reward_blend: float = 0.3,
+                 per_reward_clip: float = 10.0,
                  loss_type: str = "huber",
                  huber_beta: float = 1.0,
                  grad_clip_norm: float = 10.0,
@@ -88,6 +89,7 @@ class RainbowDQN:
             beta_frames=per_beta_frames,
             reward_weight=per_reward_weight,
             reward_blend=per_reward_blend,
+            reward_clip=per_reward_clip,
         )
 
         # N-step buffers (one per environment in parallel setup).

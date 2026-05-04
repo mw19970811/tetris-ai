@@ -105,7 +105,8 @@ class PrioritizedReplayBuffer:
     def __init__(self, capacity: int = 1_000_000, alpha: float = 0.3,
                  beta_start: float = 0.4, beta_end: float = 1.0,
                  beta_frames: int = 10_000_000, epsilon: float = 1e-6,
-                 reward_weight: float = 0.5, reward_blend: float = 0.3):
+                 reward_weight: float = 0.5, reward_blend: float = 0.3,
+                 reward_clip: float = 10.0):
         self.tree = SumTree(capacity)
         self.capacity = capacity
         self.alpha = alpha
@@ -115,24 +116,39 @@ class PrioritizedReplayBuffer:
         self.epsilon = epsilon
         self.reward_weight = reward_weight
         self.reward_blend = reward_blend
+        self.reward_clip = reward_clip
         self.max_priority = 1.0
         self._priority_ema = 1.0  # Monitoring: running average of updated priorities
 
+    @staticmethod
+    def _clamp_reward(r: float, clip: float) -> float:
+        """Clamp reward to [-clip, clip] for priority computation.
+
+        Outlier rewards (e.g. +192 survival bonus from an empty board)
+        are capped so they don't dominate sampling.  The true reward
+        is still stored for TD-error computation.
+        """
+        if clip <= 0:
+            return r
+        return max(-clip, min(clip, r))
+
     def _compute_priority(self, td_error: float, reward: float = 0.0) -> float:
-        """Blended priority using both TD-error and reward."""
+        """Blended priority with reward clipped to prevent outlier domination."""
+        r = self._clamp_reward(reward, self.reward_clip)
         td_prio = (abs(td_error) + self.epsilon) ** self.alpha
-        rw_prio = abs(reward) * self.reward_weight
+        rw_prio = abs(r) * self.reward_weight
         b = self.reward_blend
         return max((1.0 - b) * td_prio + b * rw_prio, 1e-6)
 
     def _init_priority_for(self, reward: float) -> float:
         """Initial priority for a new transition entering the SumTree.
 
-        Uses ``max_priority`` so every new entry is guaranteed to be
-        sampled soon.  High-reward transitions get an additional floor:
-        ``reward_blend * |reward| * reward_weight``.
+        Uses ``max_priority`` (PER standard) so every new entry is
+        guaranteed visibility.  Reward is clipped to prevent outliers
+        from getting an artificially high floor.
         """
-        rw_prio = abs(reward) * self.reward_weight
+        r = self._clamp_reward(reward, self.reward_clip)
+        rw_prio = abs(r) * self.reward_weight
         reward_floor = self.reward_blend * rw_prio
         return max(self.max_priority, reward_floor, 1.0)
 
@@ -241,6 +257,7 @@ class PrioritizedReplayBuffer:
             "epsilon": self.epsilon,
             "reward_weight": self.reward_weight,
             "reward_blend": self.reward_blend,
+            "reward_clip": self.reward_clip,
             "priority_ema": self._priority_ema,
         }
 
@@ -254,6 +271,7 @@ class PrioritizedReplayBuffer:
         self.epsilon = state.get("epsilon", 1e-6)
         self.reward_weight = state.get("reward_weight", 0.5)
         self.reward_blend = state.get("reward_blend", 0.3)
+        self.reward_clip = state.get("reward_clip", 10.0)
         self.max_priority = state.get("max_priority", 1.0)
         self._priority_ema = state.get("priority_ema", self.max_priority)
         # Backward-compat: drain old-format newcomers into tree.
