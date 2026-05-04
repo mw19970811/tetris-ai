@@ -106,7 +106,7 @@ class PrioritizedReplayBuffer:
                  beta_start: float = 0.4, beta_end: float = 1.0,
                  beta_frames: int = 10_000_000, epsilon: float = 1e-6,
                  reward_weight: float = 0.5, reward_blend: float = 0.3,
-                 reward_clip: float = 10.0):
+                 reward_clip: float = 10.0, uniform_ratio: float = 0.2):
         self.tree = SumTree(capacity)
         self.capacity = capacity
         self.alpha = alpha
@@ -117,6 +117,7 @@ class PrioritizedReplayBuffer:
         self.reward_weight = reward_weight
         self.reward_blend = reward_blend
         self.reward_clip = reward_clip
+        self.uniform_ratio = uniform_ratio
         self.max_priority = 1.0
         self._update_count = 0
 
@@ -186,8 +187,9 @@ class PrioritizedReplayBuffer:
         if total == 0:
             total = 1.0
 
-        n_uniform = max(1, int(batch_size * 0.2))
+        n_uniform = min(max(1, round(batch_size * self.uniform_ratio)), batch_size - 1)
         n_per = batch_size - n_uniform
+        u = n_uniform / batch_size  # actual ratio (integer-corrected)
         beta = self._beta(step)
 
         # Pre-allocate with known capacity.
@@ -218,7 +220,7 @@ class PrioritizedReplayBuffer:
             seen.add(idx)
 
             prob_per = priority / total
-            prob_mix = 0.8 * prob_per + 0.2 / tree_len
+            prob_mix = (1 - u) * prob_per + u / tree_len
             weights[pos] = (tree_len * prob_mix) ** (-beta)
             indices[pos] = idx
             boards.append(data.board)
@@ -245,7 +247,7 @@ class PrioritizedReplayBuffer:
                 continue
             seen.add(tree_idx)
 
-            prob_mix = 0.8 * 0.0 + 0.2 / tree_len  # PER prob ≈ 0 for uniform
+            prob_mix = (1 - u) * 0.0 + u / tree_len  # PER prob ≈ 0 here
             weights[pos] = (tree_len * prob_mix) ** (-beta)
             indices[pos] = tree_idx
             boards.append(data.board)
@@ -266,7 +268,7 @@ class PrioritizedReplayBuffer:
                 continue
             seen.add(idx)
             prob_per = priority / total
-            prob_mix = 0.8 * prob_per + 0.2 / tree_len
+            prob_mix = (1 - u) * prob_per + u / tree_len
             weights[pos] = (tree_len * prob_mix) ** (-beta)
             indices[pos] = idx
             boards.append(data.board); feats.append(data.features)
@@ -353,6 +355,7 @@ class PrioritizedReplayBuffer:
             "reward_weight": self.reward_weight,
             "reward_blend": self.reward_blend,
             "reward_clip": self.reward_clip,
+            "uniform_ratio": self.uniform_ratio,
         }
 
     def load_state_dict(self, state: dict):
@@ -366,6 +369,7 @@ class PrioritizedReplayBuffer:
         self.reward_weight = state.get("reward_weight", 0.5)
         self.reward_blend = state.get("reward_blend", 0.3)
         self.reward_clip = state.get("reward_clip", 10.0)
+        self.uniform_ratio = state.get("uniform_ratio", 0.2)
         self.max_priority = state.get("max_priority", 1.0)
         # Backward-compat: drain old-format newcomers into tree.
         newcomers = state.get("newcomers", [])

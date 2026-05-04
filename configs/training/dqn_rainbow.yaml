@@ -39,6 +39,7 @@ dqn:
   per_reward_weight: 0.5       # Reward multiplier in blended priority formula
   per_reward_blend: 0.3        # Blend: low=TD-focused, high=reward-focused
   per_reward_clip: 10.0        # Cap |reward| in priority calc — prevents outlier domination
+  per_uniform_ratio: 0.2       # Uniform fraction in each batch (0=pure PER, 1=pure uniform)
   loss_type: "huber"           # "huber" (SmoothL1Loss) or "mse" (MSELoss)
   huber_beta: 1.0              # SmoothL1Loss beta -- L1<--|td|<=beta-->L2 transition threshold
   grad_clip_norm: 10.0

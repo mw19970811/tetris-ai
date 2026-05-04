@@ -56,6 +56,7 @@ class DQNConfig:
     per_reward_weight: float = 0.5  # Reward multiplier in blended priority
     per_reward_blend: float = 0.3  # Blend: (1-b)·|td|^α + b·|reward|·w.  Low b = TD-error focused.
     per_reward_clip: float = 10.0  # Cap |reward| for priority — prevents outlier domination
+    per_uniform_ratio: float = 0.2  # Fraction of batch drawn uniformly (0 = pure PER, 1 = pure uniform)
     loss_type: str = "huber"  # "huber" (SmoothL1Loss) or "mse" (MSELoss)
     huber_beta: float = 1.0  # SmoothL1Loss beta — L1←|td|≤β→L2 transition threshold
     grad_clip_norm: float = 10.0

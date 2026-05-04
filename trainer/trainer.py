@@ -162,6 +162,7 @@ class Trainer:
                 per_reward_weight=self.cfg.dqn.per_reward_weight,
                 per_reward_blend=self.cfg.dqn.per_reward_blend,
                 per_reward_clip=self.cfg.dqn.per_reward_clip,
+                per_uniform_ratio=self.cfg.dqn.per_uniform_ratio,
                 loss_type=self.cfg.dqn.loss_type,
                 huber_beta=self.cfg.dqn.huber_beta,
                 grad_clip_norm=self.cfg.dqn.grad_clip_norm,
@@ -934,6 +935,7 @@ def _print_config(config: TrainingConfig, args):
         print(_kv("per_reward_weight", dqn.per_reward_weight))
         print(_kv("per_reward_blend", dqn.per_reward_blend))
         print(_kv("per_reward_clip", dqn.per_reward_clip))
+        print(_kv("per_uniform_ratio", dqn.per_uniform_ratio))
         print(_kv("per_beta_start", dqn.per_beta_start))
         print(_kv("per_beta_end", dqn.per_beta_end))
         print(_kv("per_beta_frames", f"{dqn.per_beta_frames:,}"))
