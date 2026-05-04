@@ -509,13 +509,11 @@ class Trainer:
 
                 # Collect latest training metrics for progress line + TensorBoard.
                 last_w_mean = last_prio_mean = last_rw_prio = last_init_prio = 0.0
-                last_newcomers = 0
                 if hasattr(self, '_last_train_metrics') and self._last_train_metrics:
                     last_w_mean = self._last_train_metrics.get("w_mean", 0)
                     last_prio_mean = self._last_train_metrics.get("prio_mean", 0)
                     last_rw_prio = self._last_train_metrics.get("rw_prio_mean", 0)
                     last_init_prio = self._last_train_metrics.get("init_prio", 0)
-                    last_newcomers = self._last_train_metrics.get("newcomers", 0)
 
                 self.logger.log_train_step(
                     step, avg_reward=avg_reward, avg_lines=avg_lines,
@@ -548,7 +546,6 @@ class Trainer:
                           f"  TD-prio={last_prio_mean:.1f}"
                           f"  R-prio={last_rw_prio:.1f}"
                           f"  init={last_init_prio:.1f}"
-                          f"  new={last_newcomers}"
                           f"  |  {health}", end="")
                 # Profiler breakdown line.
                 report = self.profiler.report(step, elapsed, self.num_envs)

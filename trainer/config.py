@@ -54,7 +54,7 @@ class DQNConfig:
     per_beta_end: float = 1.0
     per_beta_frames: int = 3_000_000  # β anneals to 1.0 at ~77 % of total training updates
     per_reward_weight: float = 0.5  # Reward multiplier in blended priority
-    per_reward_blend: float = 0.9  # Blend: (1-b)·|td|^α + b·|reward|·w
+    per_reward_blend: float = 0.3  # Blend: (1-b)·|td|^α + b·|reward|·w.  Low b = TD-error focused.
     loss_type: str = "huber"  # "huber" (SmoothL1Loss) or "mse" (MSELoss)
     huber_beta: float = 1.0  # SmoothL1Loss beta — L1←|td|≤β→L2 transition threshold
     grad_clip_norm: float = 10.0

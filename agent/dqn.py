@@ -46,7 +46,7 @@ class RainbowDQN:
                  per_beta_end: float = 1.0,
                  per_beta_frames: int = 10_000_000,
                  per_reward_weight: float = 0.5,
-                 per_reward_blend: float = 0.9,
+                 per_reward_blend: float = 0.3,
                  loss_type: str = "huber",
                  huber_beta: float = 1.0,
                  grad_clip_norm: float = 10.0,
@@ -254,8 +254,7 @@ class RainbowDQN:
             "rw_prio_mean": reward_priorities.mean().item(),
             "rw_prio_max": reward_priorities.max().item(),
             "reward_mean": rewards.mean().item(),
-            "init_prio": float(self.memory._init_priority),
-            "newcomers": len(self.memory._newcomers),
+            "init_prio": float(self.memory.max_priority),
         }
         if sync_event is not None:
             metrics["target_sync"] = sync_event

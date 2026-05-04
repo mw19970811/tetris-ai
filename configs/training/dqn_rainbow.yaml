@@ -37,7 +37,7 @@ dqn:
   per_beta_end: 1.0            # IS correction end
   per_beta_frames: 3_000_000   # beta anneals to 1.0 over this many training steps
   per_reward_weight: 0.5       # Reward multiplier in blended priority formula
-  per_reward_blend: 0.9        # Blend factor: (1-b)*|td|^alpha + b*|reward|*w
+  per_reward_blend: 0.3        # Blend: low = TD-focused (correct mistakes); high = reward-focused (chase scores)
   loss_type: "huber"           # "huber" (SmoothL1Loss) or "mse" (MSELoss)
   huber_beta: 1.0              # SmoothL1Loss beta -- L1<--|td|<=beta-->L2 transition threshold
   grad_clip_norm: 10.0

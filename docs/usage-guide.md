@@ -1,8 +1,8 @@
 # Tetris AI 使用文档
 
-> **版本**: v1.4  
+> **版本**: v1.5  
 > **算法**: Rainbow DQN (Double + Dueling + PER + Noisy Nets + N-step TD) + PPO 备选  
-> **新增**: 多尺度 DuelingDQN 预设（CNN 3 组 + Transformer 7 组），Soft Sync 默认策略  
+> **新增**: 混合优先级 PER（TD+reward 加权融合），reward-aware init priority，多尺度 DuelingDQN，Soft Sync  
 > **目标**: 训练 AI 智能体在标准俄罗斯方块（Tetris Guideline）中达到人类顶尖水平
 
 ---
@@ -659,27 +659,45 @@ Transformer 变体将 10 列棋盘作为 token 序列，通过自注意力学习
 
 **代码位置**：`agent/model.py` — `DuelingDQN` 类 + `DUELING_PRESETS` 字典
 
-#### 5.2.3 Prioritized Experience Replay (PER) — 按重要性采样
+#### 5.2.3 Prioritized Experience Replay (PER) — 混合优先级采样
 
-**问题**：均匀采样浪费了大量时间在低学习价值的转移上。
-
-**方法**：按 TD-error 绝对值加权的采样概率：
+**混合优先级公式**（TD-error + reward 加权融合）：
 
 \[
-P(i) = \frac{p_i^\alpha}{\sum_k p_k^\alpha}, \quad p_i = |\delta_i| + \epsilon
+p = (1 - b) \cdot |\delta|^{0.3} + b \cdot |r| \cdot w_r
 \]
 
-并引入**重要性采样权重**修正分布偏移：
+其中 \(b = 0.9\) 为 reward 混合权重，\(w_r = 0.5\) 为 reward 缩放系数。
+
+**新 transition 入队策略**：
+
+\[
+p_{\text{init}} = \max(p_{\text{max}}, \; b \cdot |r| \cdot w_r, \; 1.0)
+\]
+
+- 所有新 transition 以当前 buffer 最高优先级（\(p_{\text{max}}\)）入队——保证必定被采样
+- 高奖励 transition（如 Tetris r=500→init=225）获得额外的 reward floor，超越 \(p_{\text{max}}\)
+- 首次采样后由真实 TD-error 更新为准确优先级
+
+**重要性采样权重**修正分布偏移：
 
 \[
 w_i = \left(\frac{1}{N} \cdot \frac{1}{P(i)}\right)^\beta / \max_j w_j
 \]
 
 **超参数**：
-- \(\alpha = 0.6\) — 控制优先级程度
-- \(\beta\)：0.4 → 1.0 — 从训练开始到结束线性增长
-- 缓冲区容量：1,000,000 条转移
-- 数据结构：SumTree（线段树），实现 \(O(\log N)\) 采样
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `per_alpha` | 0.3 | TD-error 优先级指数（低=接近均匀采样） |
+| `per_reward_blend` | 0.9 | reward 混合权重（高=reward 主导采样） |
+| `per_reward_weight` | 0.5 | reward 缩放系数 |
+| `per_beta_start` | 0.4 | IS 修正初始值 |
+| `per_beta_end` | 1.0 | IS 修正最终值 |
+| `per_beta_frames` | 3,000,000 | β 线性增长到此训练步数 |
+| `replay_capacity` | 2,000,000 | buffer 容量 |
+
+数据结构：SumTree（线段树），\(O(\log N)\) 采样 + 更新。
 
 **代码位置**：`agent/memory.py` — `PrioritizedReplayBuffer` 类
 
