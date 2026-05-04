@@ -500,7 +500,13 @@ class Trainer:
                         if hasattr(m, 'get_sigma_mean')
                     )
 
-                # TensorBoard curves.
+                # Collect latest training metrics for progress line + TensorBoard.
+                last_w_mean = last_prio_mean = last_rw_prio = 0.0
+                if hasattr(self, '_last_train_metrics') and self._last_train_metrics:
+                    last_w_mean = self._last_train_metrics.get("w_mean", 0)
+                    last_prio_mean = self._last_train_metrics.get("prio_mean", 0)
+                    last_rw_prio = self._last_train_metrics.get("rw_prio_mean", 0)
+
                 self.logger.log_train_step(
                     step, avg_reward=avg_reward, avg_lines=avg_lines,
                     fps=fps, buffer_size=buf_size, elapsed=elapsed,
@@ -510,13 +516,6 @@ class Trainer:
                     w_mean=last_w_mean, td_prio_mean=last_prio_mean,
                     rw_prio_mean=last_rw_prio,
                 )
-
-                # Collect latest training metrics for the progress line.
-                last_w_mean = last_prio_mean = last_rw_prio = 0.0
-                if hasattr(self, '_last_train_metrics'):
-                    last_w_mean = self._last_train_metrics.get("w_mean", 0)
-                    last_prio_mean = self._last_train_metrics.get("prio_mean", 0)
-                    last_rw_prio = self._last_train_metrics.get("rw_prio_mean", 0)
 
                 print(f"\r[{_timestamp()}]  "
                       f"Step {step:>9,}/{total_steps:,} ({progress:.1%})  "
