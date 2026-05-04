@@ -258,7 +258,7 @@ class RainbowDQN:
             "rw_prio_mean": reward_priorities.mean().item(),
             "rw_prio_max": reward_priorities.max().item(),
             "reward_mean": rewards.mean().item(),
-            "init_prio": float(self.memory.max_priority),
+            "init_prio": float(self.memory._init_priority_for(0.0)),
         }
         if sync_event is not None:
             metrics["target_sync"] = sync_event

@@ -119,6 +119,7 @@ class PrioritizedReplayBuffer:
         self.reward_clip = reward_clip
         self.uniform_ratio = uniform_ratio
         self.max_priority = 1.0
+        self._priority_mean = 1.0  # cached tree mean for init-priority cap
         self._update_count = 0
 
     @staticmethod
@@ -144,14 +145,15 @@ class PrioritizedReplayBuffer:
     def _init_priority_for(self, reward: float) -> float:
         """Initial priority for a new transition entering the SumTree.
 
-        Uses ``max_priority`` (PER standard) so every new entry is
-        guaranteed visibility.  Reward is clipped to prevent outliers
-        from getting an artificially high floor.
+        Uses ``max_priority`` capped at 3× the tree mean, so a single
+        outlier cannot monopolise sampling.  High-reward transitions
+        use the *raw* reward (unclipped) for their floor, so a tetris
+        can still break through the cap.
         """
-        r = self._clamp_reward(reward, self.reward_clip)
-        rw_prio = abs(r) * self.reward_weight
+        rw_prio = abs(reward) * self.reward_weight
         reward_floor = self.reward_blend * rw_prio
-        return max(self.max_priority, reward_floor, 1.0)
+        base = min(self.max_priority, self._priority_mean * 3.0)
+        return max(base, reward_floor, 1.0)
 
     def add(self, state: Tuple[np.ndarray, np.ndarray], action: int,
             reward: float, next_state: Tuple[np.ndarray, np.ndarray],
@@ -294,20 +296,25 @@ class PrioritizedReplayBuffer:
         return batch, indices[:pos], weights[:pos]
 
     def _refresh_max_priority(self):
-        """Recompute max_priority from the SumTree leaves.
+        """Recompute max and mean priority from the SumTree leaves.
 
-        Called periodically so ``max_priority`` reflects the *current*
-        buffer, not a stale spike from early training.
+        Called periodically so ``max_priority`` and ``_priority_mean``
+        reflect the *current* buffer, not stale spikes.
         """
         if self.tree.size == 0:
             self.max_priority = 1.0
+            self._priority_mean = 1.0
             return
         leaf_start = self.capacity - 1
         leaf_end = leaf_start + self.tree.size
         leaves = self.tree.tree[leaf_start:leaf_end]
-        # Only active leaves (data not None) have priority > 0.
         active = leaves[leaves > 0]
-        self.max_priority = float(np.max(active)) if len(active) > 0 else 1.0
+        if len(active) > 0:
+            self.max_priority = float(np.max(active))
+            self._priority_mean = float(np.mean(active))
+        else:
+            self.max_priority = 1.0
+            self._priority_mean = 1.0
 
     def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray,
                           rewards: Optional[np.ndarray] = None):
