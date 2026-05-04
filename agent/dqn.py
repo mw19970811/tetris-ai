@@ -41,11 +41,12 @@ class RainbowDQN:
                  target_update_tau: float = 0.001,
                  use_hard_update: bool = False,
                  replay_capacity: int = 1_000_000,
-                 per_alpha: float = 0.8,
+                 per_alpha: float = 0.4,
                  per_beta_start: float = 0.4,
                  per_beta_end: float = 1.0,
                  per_beta_frames: int = 10_000_000,
                  per_reward_weight: float = 0.5,
+                 per_reward_blend: float = 0.9,
                  loss_type: str = "huber",
                  huber_beta: float = 1.0,
                  grad_clip_norm: float = 10.0,
@@ -86,6 +87,7 @@ class RainbowDQN:
             beta_start=per_beta_start, beta_end=per_beta_end,
             beta_frames=per_beta_frames,
             reward_weight=per_reward_weight,
+            reward_blend=per_reward_blend,
         )
 
         # N-step buffers (one per environment in parallel setup).

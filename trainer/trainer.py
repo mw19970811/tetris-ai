@@ -154,6 +154,7 @@ class Trainer:
                 per_beta_end=self.cfg.dqn.per_beta_end,
                 per_beta_frames=self.cfg.dqn.per_beta_frames,
                 per_reward_weight=self.cfg.dqn.per_reward_weight,
+                per_reward_blend=self.cfg.dqn.per_reward_blend,
                 loss_type=self.cfg.dqn.loss_type,
                 huber_beta=self.cfg.dqn.huber_beta,
                 grad_clip_norm=self.cfg.dqn.grad_clip_norm,
@@ -917,6 +918,7 @@ def _print_config(config: TrainingConfig, args):
         print(_kv("replay_capacity", f"{dqn.replay_capacity:,}"))
         print(_kv("per_alpha", dqn.per_alpha))
         print(_kv("per_reward_weight", dqn.per_reward_weight))
+        print(_kv("per_reward_blend", dqn.per_reward_blend))
         print(_kv("per_beta_start", dqn.per_beta_start))
         print(_kv("per_beta_end", dqn.per_beta_end))
         print(_kv("per_beta_frames", f"{dqn.per_beta_frames:,}"))

@@ -88,17 +88,19 @@ class SumTree:
 
 
 class PrioritizedReplayBuffer:
-    """PER buffer with hybrid priority and importance-sampling correction.
+    """PER buffer with blended TD+reward priority.
 
-    Hybrid priority:  p = max( |td|^alpha,  |reward| * reward_weight )
-    This prevents high-reward transitions (line clears) from being
-    drowned out by high-TD-error transitions (unexpected deaths).
+    Blend formula:
+        priority = (1 - reward_blend) * |td|^alpha  +  reward_blend * |reward| * reward_weight
+
+    When reward_blend is high (e.g. 0.9), the reward signal dominates
+    sampling so line-clears are prioritised over high-TD-error deaths.
     """
 
-    def __init__(self, capacity: int = 1_000_000, alpha: float = 0.8,
+    def __init__(self, capacity: int = 1_000_000, alpha: float = 0.4,
                  beta_start: float = 0.4, beta_end: float = 1.0,
                  beta_frames: int = 10_000_000, epsilon: float = 1e-6,
-                 reward_weight: float = 0.5):
+                 reward_weight: float = 0.5, reward_blend: float = 0.9):
         self.tree = SumTree(capacity)
         self.capacity = capacity
         self.alpha = alpha
@@ -107,14 +109,16 @@ class PrioritizedReplayBuffer:
         self.beta_frames = beta_frames
         self.epsilon = epsilon
         self.reward_weight = reward_weight
+        self.reward_blend = reward_blend
         self.max_priority = 1.0
         self._init_priority = 1.0  # New transitions start at 1.0, not max
 
     def _compute_priority(self, td_error: float, reward: float = 0.0) -> float:
-        """Hybrid priority: max of TD-based and reward-based priority."""
+        """Blended priority: weighted mix of TD-based and reward-based."""
         td_prio = (abs(td_error) + self.epsilon) ** self.alpha
         rw_prio = abs(reward) * self.reward_weight
-        return max(td_prio, rw_prio, 1e-6)
+        b = self.reward_blend
+        return max((1.0 - b) * td_prio + b * rw_prio, 1e-6)
 
     def add(self, state: Tuple[np.ndarray, np.ndarray], action: int,
             reward: float, next_state: Tuple[np.ndarray, np.ndarray],
@@ -225,17 +229,19 @@ class PrioritizedReplayBuffer:
             "beta_frames": self.beta_frames,
             "epsilon": self.epsilon,
             "reward_weight": self.reward_weight,
+            "reward_blend": self.reward_blend,
         }
 
     def load_state_dict(self, state: dict):
         """Restore buffer state from checkpoint."""
         self.capacity = state["capacity"]
-        self.alpha = state.get("alpha", 0.8)
+        self.alpha = state.get("alpha", 0.4)
         self.beta_start = state.get("beta_start", 0.4)
         self.beta_end = state.get("beta_end", 1.0)
         self.beta_frames = state.get("beta_frames", 10_000_000)
         self.epsilon = state.get("epsilon", 1e-6)
         self.reward_weight = state.get("reward_weight", 0.5)
+        self.reward_blend = state.get("reward_blend", 0.9)
         self.max_priority = state["max_priority"]
         self._init_priority = 1.0
         self.tree = SumTree(self.capacity)

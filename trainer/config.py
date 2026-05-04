@@ -47,13 +47,14 @@ class DQNConfig:
     train_every: int = 4
     target_update_freq: int = 4000  # Periodic anchor hard-sync interval (for soft-sync mode)
     target_update_tau: float = 0.001  # Polyak averaging coefficient per training step
-    use_hard_update: bool = False  # Soft sync (Polyak) every step; periodic hard anchor sync
+    use_hard_update: bool = True  # Soft sync (Polyak) every step; periodic hard anchor sync
     replay_capacity: int = 2_000_000  # Larger buffer for batch_size=256 (~4.4 GB RAM)
-    per_alpha: float = 0.8  # Higher α = more aggressive prioritisation
+    per_alpha: float = 0.4  # Lower α → less extreme TD prioritisation (was 0.8)
     per_beta_start: float = 0.4
     per_beta_end: float = 1.0
     per_beta_frames: int = 3_000_000  # β anneals to 1.0 at ~77 % of total training updates
-    per_reward_weight: float = 0.5  # Hybrid priority: |reward| × weight competes with |td|^α
+    per_reward_weight: float = 0.5  # Reward multiplier in blended priority
+    per_reward_blend: float = 0.9  # Blend: (1-b)·|td|^α + b·|reward|·w
     loss_type: str = "huber"  # "huber" (SmoothL1Loss) or "mse" (MSELoss)
     huber_beta: float = 1.0  # SmoothL1Loss beta — L1←|td|≤β→L2 transition threshold
     grad_clip_norm: float = 10.0
