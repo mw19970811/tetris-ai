@@ -118,7 +118,6 @@ class PrioritizedReplayBuffer:
         self.reward_blend = reward_blend
         self.reward_clip = reward_clip
         self.max_priority = 1.0
-        self._priority_ema = 1.0  # Monitoring: running average of updated priorities
         self._update_count = 0
 
     @staticmethod
@@ -244,14 +243,11 @@ class PrioritizedReplayBuffer:
         """
         if rewards is None:
             rewards = np.zeros_like(td_errors)
-        batch_mean = 0.0
         batch_max = 0.0
         for idx, td_error, reward in zip(indices, td_errors, rewards):
             priority = self._compute_priority(float(td_error), float(reward))
             self.tree.update(int(idx), priority)
-            batch_mean += priority
             batch_max = max(batch_max, priority)
-        batch_mean /= max(len(indices), 1)
 
         # Track batch max (prevents stale spikes).
         self.max_priority = max(self.max_priority, batch_max)
@@ -260,8 +256,6 @@ class PrioritizedReplayBuffer:
         self._update_count += 1
         if self._update_count % 100 == 0:
             self._refresh_max_priority()
-
-        self._priority_ema = 0.99 * self._priority_ema + 0.01 * batch_mean
 
     def _beta(self, step: int) -> float:
         """Linearly anneal beta from start to end."""
@@ -285,7 +279,6 @@ class PrioritizedReplayBuffer:
             "reward_weight": self.reward_weight,
             "reward_blend": self.reward_blend,
             "reward_clip": self.reward_clip,
-            "priority_ema": self._priority_ema,
         }
 
     def load_state_dict(self, state: dict):
@@ -300,7 +293,6 @@ class PrioritizedReplayBuffer:
         self.reward_blend = state.get("reward_blend", 0.3)
         self.reward_clip = state.get("reward_clip", 10.0)
         self.max_priority = state.get("max_priority", 1.0)
-        self._priority_ema = state.get("priority_ema", self.max_priority)
         # Backward-compat: drain old-format newcomers into tree.
         newcomers = state.get("newcomers", [])
         self.tree = SumTree(self.capacity)
