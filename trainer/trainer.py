@@ -925,6 +925,60 @@ def _print_config(config: TrainingConfig, args):
 
 
 # ------------------------------------------------------------------ #
+#  YAML config loading
+# ------------------------------------------------------------------ #
+def _load_yaml_config(path: str) -> dict:
+    """Load a YAML config file.  Requires ``pyyaml``.
+
+    Returns an empty dict if yaml is unavailable or the file is missing.
+    """
+    try:
+        import yaml
+    except ImportError:
+        print("[Config] pyyaml not installed — using dataclass defaults only.")
+        print("[Config]   pip install pyyaml   to enable YAML config files.")
+        return {}
+
+    if not os.path.exists(path):
+        print(f"[Config] Config file not found: {path}  — using defaults.")
+        return {}
+
+    with open(path, "r") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _merge_into_dataclass(cfg: TrainingConfig, yaml_dict: dict):
+    """Merge top-level YAML keys into a TrainingConfig instance in-place.
+
+    Top-level keys map to TrainingConfig fields directly.
+    Nested keys (dqn, network, env, ppo) are merged into sub-dataclasses.
+    """
+    for key, value in yaml_dict.items():
+        if key == "training" and isinstance(value, dict):
+            for k, v in value.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+        elif key == "dqn" and isinstance(value, dict):
+            for k, v in value.items():
+                if hasattr(cfg.dqn, k):
+                    setattr(cfg.dqn, k, v)
+        elif key == "network" and isinstance(value, dict):
+            for k, v in value.items():
+                if hasattr(cfg.network, k):
+                    setattr(cfg.network, k, v)
+        elif key == "env" and isinstance(value, dict):
+            for k, v in value.items():
+                if k == "reward_weights" and isinstance(v, dict):
+                    cfg.env.reward_weights.update(v)
+                elif hasattr(cfg.env, k):
+                    setattr(cfg.env, k, v)
+        elif key == "ppo" and isinstance(value, dict):
+            for k, v in value.items():
+                if hasattr(cfg.ppo, k):
+                    setattr(cfg.ppo, k, v)
+
+
+# ------------------------------------------------------------------ #
 #  Entry point
 # ------------------------------------------------------------------ #
 def create_trainer(config_dict: Optional[dict] = None) -> Trainer:
@@ -943,22 +997,25 @@ def main():
         description="Train Tetris RL Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python scripts/train.py                                  # DQN, 1B samples
-  python scripts/train.py --samples 500000000              # 500M samples
-  python scripts/train.py --steps 10000000                 # Override: 10M env steps
-  python scripts/train.py --algo ppo --samples 2000000000  # PPO, 2B samples""")
-    parser.add_argument("--algo", type=str, default="dqn", choices=["dqn", "ppo"])
+  python scripts/train.py                                              # DQN, 1B samples
+  python scripts/train.py --config configs/training/dqn_rainbow.yaml   # explicit config
+  python scripts/train.py --samples 500000000                          # 500M samples
+  python scripts/train.py --steps 10000000                             # Override: 10M env steps
+  python scripts/train.py --algo ppo --samples 2000000000              # PPO, 2B samples""")
+    parser.add_argument("--config", type=str, default="configs/training/dqn_rainbow.yaml",
+                        help="Path to YAML config file (requires pyyaml).")
+    parser.add_argument("--algo", type=str, default=None, choices=["dqn", "ppo"])
     parser.add_argument("--samples", type=int, default=None,
                         help="Total training samples consumed (DQN: transitions fed to optimizer. "
                              "Derived total_steps = samples × train_every / batch_size)")
     parser.add_argument("--steps", type=int, default=None,
                         help="Override: set env steps directly (bypasses derived computation)")
-    parser.add_argument("--envs", type=int, default=64)
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--envs", type=int, default=None)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--wandb", action="store_true", default=None)
     parser.add_argument("--no-pretrain", action="store_true")
-    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
+    parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--resume", action="store_true",
                         help="Auto-resume from latest checkpoint in --checkpoint-dir")
     parser.add_argument("--resume-from", type=str, default=None,
@@ -967,15 +1024,30 @@ def main():
                         help="Enable per-phase timing breakdown")
     args = parser.parse_args()
 
-    config = TrainingConfig(
-        algorithm=args.algo,
-        num_envs=args.envs,
-        device=args.device,
-        seed=args.seed,
-        use_wandb=args.wandb,
-        use_pretrain=not args.no_pretrain,
-        checkpoint_dir=args.checkpoint_dir,
-    )
+    # 1. Start from dataclass defaults.
+    config = TrainingConfig()
+
+    # 2. Overlay YAML config file (if pyyaml is installed).
+    yaml_dict = _load_yaml_config(args.config)
+    if yaml_dict:
+        _merge_into_dataclass(config, yaml_dict)
+        print(f"[Config] Loaded YAML config: {args.config}")
+
+    # 3. Overlay CLI args (highest priority).
+    if args.algo is not None:
+        config.algorithm = args.algo
+    if args.envs is not None:
+        config.num_envs = args.envs
+    if args.device is not None:
+        config.device = args.device
+    if args.seed is not None:
+        config.seed = args.seed
+    if args.wandb is not None:
+        config.use_wandb = args.wandb
+    if args.no_pretrain:
+        config.use_pretrain = False
+    if args.checkpoint_dir is not None:
+        config.checkpoint_dir = args.checkpoint_dir
     if args.samples is not None:
         config.total_samples = args.samples
     if args.steps is not None:

@@ -881,40 +881,62 @@ Score(placement) = -4.500 × landing_height
 
 ### 6.0 配置方式
 
-项目支持两种配置方式：直接修改 `trainer/config.py` 中的 dataclass 默认值，或通过 CLI 参数传入。
+配置采用三层优先级（由低到高）：
 
-**方式 A — 修改 `trainer/config.py`**（推荐，持久生效）：
-
-```python
-# trainer/config.py
-
-@dataclass
-class TrainingConfig:
-    total_samples: int = 500_000_000  # 改为 500M 样本
-
-@dataclass
-class EnvConfig:
-    reward_weights: dict = field(default_factory=lambda: {
-        "w_height": 0.0,     # 高度惩罚
-        "w_holes": 0.0,      # 孔洞惩罚
-        "w_bumpiness": 0.0,  # 崎岖度惩罚
-        "w_well": 0.0,       # 井深惩罚
-        "w_survival": 0.01,  # 存活奖励
-        "w_death": -100.0,   # 死亡惩罚
-    })
+```
+dataclass 默认值  →  YAML 文件  →  CLI 参数
+(trainer/config.py)  (--config)    (--samples, --envs, ...)
 ```
 
-**方式 B — CLI 参数**（一次性覆盖）：
+**方式 A — 修改 YAML 配置文件**（推荐，持久生效）：
 
 ```bash
-# 指定训练样本数（自动推导 total_steps）
-python scripts/train.py --samples 500000000
+# 复制默认配置
+cp configs/training/dqn_rainbow.yaml configs/training/my_experiment.yaml
 
-# 直接指定环境步数（绕过推导公式）
-python scripts/train.py --steps 10000000
+# 编辑参数
+vim configs/training/my_experiment.yaml
 
-# 其他常用参数
-python scripts/train.py --device cuda --envs 64 --algo dqn
+# 使用自定义配置训练
+python scripts/train.py --config configs/training/my_experiment.yaml
+```
+
+默认加载 `configs/training/dqn_rainbow.yaml`（无需显式指定 `--config`）。
+
+YAML 示例片段：
+
+```yaml
+dqn:
+  lr: 2.5e-5
+  batch_size: 256
+  per_alpha: 0.8
+  per_reward_weight: 0.5
+  loss_type: "huber"
+
+network:
+  model_size: "transformer_base"
+
+env:
+  reward_weights:
+    w_height: 0.0
+    w_holes: 0.0
+```
+
+> **需要 `pyyaml`**：`pip install pyyaml`。未安装时使用 dataclass 默认值，不影响训练。
+
+**方式 B — 修改 `trainer/config.py` dataclass 默认值**（永久生效，无依赖）：
+
+```python
+@dataclass
+class DQNConfig:
+    lr: float = 2.5e-5
+    batch_size: int = 256
+```
+
+**方式 C — CLI 参数**（一次性覆盖，最高优先级）：
+
+```bash
+python scripts/train.py --samples 500000000 --envs 64
 ```
 
 > **`total_samples` vs `total_steps`**：
@@ -960,10 +982,13 @@ python scripts/train.py --device cuda --envs 64 --algo dqn
 | `target_update_tau` | **0.001** | Polyak 软更新系数 τ（每训练步执行） |
 | `use_hard_update` | **false** | Polyak 软更新（推荐）；设 true 切回硬更新 |
 | `replay_capacity` | 2,000,000 | 回放缓冲区容量 |
-| `per_alpha` | 0.6 | PER 优先级指数 |
+| `per_alpha` | **0.8** | PER 优先级指数（越高越激进） |
 | `per_beta_start` | 0.4 | IS 修正初始值 |
 | `per_beta_end` | 1.0 | IS 修正最终值 |
 | `per_beta_frames` | 3,000,000 | β 衰减帧数 |
+| `per_reward_weight` | **0.5** | 混合优先级：\|reward\| × weight 与 \|td\|^α 竞争 |
+| `loss_type` | `"huber"` | 损失函数：`"huber"` (SmoothL1Loss) 或 `"mse"` (MSELoss) |
+| `huber_beta` | 1.0 | SmoothL1Loss β 参数（仅 loss_type=huber 时生效） |
 | `grad_clip_norm` | 10.0 | 梯度裁剪阈值 |
 
 ### 6.3 Network 配置 (NetworkConfig)
@@ -977,7 +1002,9 @@ python scripts/train.py --device cuda --envs 64 --algo dqn
 | `num_actions` | 112 | 最大动作数 |
 | `use_noisy` | true | 使用 NoisyNet（学习型探索） |
 | `sigma_init` | **0.01** | NoisyNet 初始噪声（保守，配合大 batch_size） |
-| `sigma_decay` | **0.9999997** | 每训练步 σ 衰减系数；15.6M 步后 σ 约 1% |
+| `sigma_decay` | **0.9999997** | 每训练步 σ 衰减系数；3M 步→41%，15.6M→~1% |
+
+> **YAML 中配置 `sigma_decay`**：在 `network` 段添加 `sigma_decay: 0.9999997` 即可。
 
 **model_size 预设参数详情**：
 
