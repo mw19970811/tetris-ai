@@ -694,27 +694,32 @@ class Trainer:
                 except Exception:
                     pass
 
-            if cached_size == current_size:
-                print(f"[Pretrain] Loading cached pretrained weights from {weights_path} ...")
-                converted = torch.load(weights_path, map_location="cpu")
-                try:
-                    if self.cfg.algorithm == "dqn" and hasattr(self.agent, 'online_net'):
-                        self.agent.online_net.load_state_dict(converted)
-                        self.agent.target_net.load_state_dict(converted)
-                    print("[Pretrain] Skipped data collection + BC training "
-                          f"(cached weights loaded, model_size={current_size}).")
-                    return
-                except RuntimeError as e:
-                    print(f"[Pretrain] Cached weights incompatible: {e}")
-                    print("[Pretrain] Deleting stale cache and retraining...")
+            if cached_size is not None:
+                if cached_size == current_size:
+                    print(f"[Pretrain] Loading cached pretrained weights from {weights_path} ...")
+                    converted = torch.load(weights_path, map_location="cpu")
+                    try:
+                        if self.cfg.algorithm == "dqn" and hasattr(self.agent, 'online_net'):
+                            self.agent.online_net.load_state_dict(converted)
+                            self.agent.target_net.load_state_dict(converted)
+                        print("[Pretrain] Skipped data collection + BC training "
+                              f"(cached weights loaded, model_size={current_size}).")
+                        return
+                    except RuntimeError as e:
+                        print(f"[Pretrain] Cached weights incompatible: {e}")
+                        print("[Pretrain] Deleting stale cache and retraining...")
+                else:
+                    print(f"[Pretrain] model_size changed ({cached_size} -> {current_size})"
+                          f" -- cache invalid, retraining...")
+                # Delete stale cache.
+                for p in [weights_path, meta_path]:
+                    if _os.path.exists(p):
+                        _os.remove(p)
             else:
-                print(f"[Pretrain] model_size changed ({cached_size} → {current_size})"
-                      f" — cache invalid, retraining...")
-
-            # Delete stale cache.
-            for p in [weights_path, meta_path]:
-                if _os.path.exists(p):
-                    _os.remove(p)
+                # Weights file exists but no metadata -- old-format cache, delete it.
+                print("[Pretrain] Cached weights found but no metadata "
+                      "(old format) -- retraining...")
+                _os.remove(weights_path)
 
         # --- Full path: collect + train + cache ---
         pretrainer = Pretrainer(model_type="dqn", num_actions=self.cfg.network.num_actions,

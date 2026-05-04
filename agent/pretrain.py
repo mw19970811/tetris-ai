@@ -316,11 +316,37 @@ class Pretrainer:
     def load_samples(self, tag: str = "latest"
                      ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
                                 np.ndarray, dict]:
-        """Load previously saved pretrain samples. Returns (boards, features, actions, scores, metadata)."""
+        """Load previously saved pretrain samples.
+
+        If the .json metadata file is missing (e.g. samples copied
+        from an old version), minimal metadata is reconstructed from
+        the .npz arrays.
+        """
         base = os.path.join(self.sample_dir, f"samples_{tag}")
         data = np.load(base + ".npz")
-        with open(base + ".json") as f:
-            metadata = json.load(f)
+
+        json_path = base + ".json"
+        if os.path.exists(json_path):
+            with open(json_path) as f:
+                metadata = json.load(f)
+        else:
+            print(f"[Pretrain] Warning: metadata file not found ({json_path}). "
+                  f"Reconstructing minimal metadata.")
+            actions_arr = data["actions"]
+            scores_arr = data.get("scores", np.array([]))
+            metadata = {
+                "num_episodes": 0,
+                "num_transitions": len(actions_arr),
+                "dellacherie_score_mean": float(np.mean(scores_arr)) if len(scores_arr) > 0 else 0.0,
+                "dellacherie_score_std": float(np.std(scores_arr)) if len(scores_arr) > 0 else 0.0,
+                "episode_score_mean": 0.0,
+                "episode_score_max": 0,
+                "episode_lines_mean": 0.0,
+                "active_features": [],
+                "weights": {},
+                "_reconstructed": True,
+            }
+
         print(f"[Pretrain] Loaded {metadata['num_transitions']:,} transitions from {base}.npz")
         return (data["boards"], data["features"], data["actions"],
                 data["scores"], metadata)
