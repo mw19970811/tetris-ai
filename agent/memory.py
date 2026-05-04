@@ -181,14 +181,25 @@ class PrioritizedReplayBuffer:
 
         segment = total / batch_size
         beta = self._beta(step)
+        seen = set()  # deduplicate within batch
 
         for i in range(batch_size):
-            s = random.uniform(segment * i, segment * (i + 1))
-            idx, priority, data = self.tree.get(s)
+            # Stratified sampling over cumulative priority.  Retry until
+            # a non-None, non-duplicate sample is found.  In the worst
+            # case (tiny buffer), fall back to a global random search.
+            data = None
+            for attempt in range(50):
+                if attempt < 10:
+                    # Stratified: stay within segment i.
+                    s = random.uniform(segment * i, segment * (i + 1))
+                else:
+                    # Fallback: global random (segment exhausted).
+                    s = random.uniform(0, total)
+                idx, priority, data = self.tree.get(s)
+                if data is not None and idx not in seen:
+                    break
 
-            if data is None:
-                continue
-
+            seen.add(idx)
             prob = priority / total
             weight = (len(self.tree) * prob) ** (-beta)
             weights[i] = weight
