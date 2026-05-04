@@ -22,22 +22,36 @@ training:
 dqn:
   gamma: 0.99
   n_step: 5
-  lr: 2.5e-5           # Conservative: slower learning for stability
+  lr: 2.5e-5           # 10× lower than typical — prevents online drift between hard syncs
   batch_size: 256
   train_every: 4        # Train every N environment steps
-  target_update_freq: 8000
-  target_update_tau: 0.005
-  use_hard_update: false    # Polyak soft updates (τ=0.005) — target tracks online continuously
+  target_update_freq: 4000     # Periodic anchor hard-sync (for soft-sync mode)
+  target_update_tau: 0.001    # Polyak averaging coefficient per training step
+  use_hard_update: false      # Soft sync (Polyak) every step
   replay_capacity: 1_000_000
-  per_alpha: 0.6         # PER priority exponent
+  per_alpha: 0.8         # PER priority exponent (higher = more aggressive)
   per_beta_start: 0.4    # IS correction start
   per_beta_end: 1.0      # IS correction end
   per_beta_frames: 10_000_000
+  per_reward_weight: 0.5  # Hybrid priority: |reward| × weight competes with |td|^α
   grad_clip_norm: 10.0
 
 network:
-  cnn_channels: 32
-  hidden_dim: 128
+  model_size: "medium"     # ─── CNN-based ─────────────────────────────
+                           # small       (0.14M)  CNN 32ch,  hidden 128
+                           # medium      (0.51M)  CNN 64ch,  hidden 256
+                           # large       (1.96M)  CNN 128ch, hidden 512
+                           #
+                           # ─── Transformer-based (pre-LN, global res) ─
+                           # transformer_small  (0.67M)   d=128, L=2
+                           # transformer_base   (5.8M)    d=256, L=6
+                           # transformer_medium (24M)     d=384, L=12
+                           # transformer_large  (104M)    d=640, L=20
+                           # transformer_huge   (282M)    d=896, L=28
+                           # transformer_giant  (418M)    d=1024,L=32
+                           # transformer_mega   (968M)    d=1280,L=48
+  cnn_channels: 64
+  hidden_dim: 256
   feature_dim: 53
   num_actions: 112
   use_noisy: true

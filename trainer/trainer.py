@@ -77,6 +77,9 @@ class Trainer:
         # Create agent.
         self._create_agent()
 
+        # Print model summary.
+        self._print_model_summary()
+
         # Evaluator.
         self.evaluator = Evaluator(
             env_creator=self._make_env, agent=self.agent,
@@ -135,6 +138,7 @@ class Trainer:
             self.agent = RainbowDQN(
                 num_actions=self.cfg.network.num_actions,
                 feature_dim=self.cfg.network.feature_dim,
+                model_size=self.cfg.network.model_size,
                 gamma=self.cfg.dqn.gamma,
                 n_step=self.cfg.dqn.n_step,
                 lr=self.cfg.dqn.lr,
@@ -148,6 +152,9 @@ class Trainer:
                 per_beta_start=self.cfg.dqn.per_beta_start,
                 per_beta_end=self.cfg.dqn.per_beta_end,
                 per_beta_frames=self.cfg.dqn.per_beta_frames,
+                per_reward_weight=self.cfg.dqn.per_reward_weight,
+                loss_type=self.cfg.dqn.loss_type,
+                huber_beta=self.cfg.dqn.huber_beta,
                 grad_clip_norm=self.cfg.dqn.grad_clip_norm,
                 use_noisy=self.cfg.network.use_noisy,
                 sigma_init=self.cfg.network.sigma_init,
@@ -175,6 +182,98 @@ class Trainer:
             )
         else:
             raise ValueError(f"Unknown algorithm: {self.cfg.algorithm}")
+
+    # ------------------------------------------------------------------ #
+    #  Model summary
+    # ------------------------------------------------------------------ #
+    def _print_model_summary(self):
+        """Print DQN / PPO network structure and parameter breakdown."""
+        net = getattr(self.agent, 'online_net', None) or getattr(self.agent, 'network', None)
+        if net is None:
+            return
+
+        total = sum(p.numel() for p in net.parameters())
+        trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
+        size_tag = f"{total/1e6:.1f}M" if total >= 1e6 else f"{total/1e3:.0f}K"
+
+        print("=" * 60)
+        print(f"  Model: {type(net).__name__}  ({size_tag} params, {trainable/1e6:.1f}M trainable)")
+        print("=" * 60)
+
+        # Board encoder info.
+        encoder = getattr(net, 'board_encoder', None)
+        if encoder is not None:
+            etype = type(encoder).__name__
+            eparams = sum(p.numel() for p in encoder.parameters())
+            print(f"  Board encoder: {etype}  ({eparams/1e6:.2f}M params)")
+            if hasattr(encoder, 'encoder'):
+                n_layers = len(encoder.encoder.layers)
+                d_model = encoder.encoder.layers[0].self_attn.embed_dim
+                n_heads = encoder.encoder.layers[0].self_attn.num_heads
+                ff_dim = encoder.encoder.layers[0].linear1.out_features
+                pre_ln = encoder.encoder.layers[0].norm_first
+                gr = getattr(encoder, 'global_residual', False)
+                print(f"    d_model={d_model}  layers={n_layers}  heads={n_heads}"
+                      f"  ff_dim={ff_dim}")
+                print(f"    pre-LN={pre_ln}  global_residual={gr}")
+            elif hasattr(encoder, 'conv'):
+                channels = []
+                for m in encoder.conv:
+                    if isinstance(m, torch.nn.Conv2d):
+                        channels.append(m.out_channels)
+                print(f"    CNN channels: {channels}")
+
+        # MLP backbone.
+        mlp = getattr(net, 'mlp', None)
+        if mlp is not None:
+            mparams = sum(p.numel() for p in mlp.parameters())
+            print(f"  MLP backbone: {mparams/1e3:.1f}K params")
+
+        # Fusion layer.
+        fusion = getattr(net, 'fusion', None)
+        if fusion is not None:
+            fparams = sum(p.numel() for p in fusion.parameters())
+            print(f"  Fusion: {fparams/1e3:.1f}K params")
+
+        # Dueling heads.
+        v_params = sum(p.numel() for p in net.value_fc.parameters())
+        a_params = sum(p.numel() for p in net.advantage_fc.parameters())
+        print(f"  Value head:      {v_params/1e3:.1f}K params")
+        print(f"  Advantage head:  {a_params/1e3:.1f}K params")
+
+        # Layer table.
+        print(f"\n  {'Layer':<32s} {'Output':<22s} {'Params':>10s}")
+        print(f"  {'─'*32} {'─'*22} {'─'*10}")
+        for name, module in net.named_children():
+            n_p = sum(p.numel() for p in module.parameters())
+            # Derive output shape.
+            shape_str = ""
+            if hasattr(module, 'out_features'):
+                shape_str = f"({module.out_features},)"
+            elif hasattr(module, 'num_actions'):
+                shape_str = f"({module.num_actions} actions)"
+            elif isinstance(module, (torch.nn.Sequential,)):
+                # Pick last child's output.
+                last = list(module.children())[-1] if list(module.children()) else None
+                if hasattr(last, 'out_features'):
+                    shape_str = f"({last.out_features},)"
+                elif hasattr(last, 'num_actions'):
+                    shape_str = f"({last.num_actions} actions)"
+            if n_p >= 1e6:
+                ptag = f"{n_p/1e6:.2f}M"
+            elif n_p >= 1e3:
+                ptag = f"{n_p/1e3:.1f}K"
+            else:
+                ptag = str(n_p)
+            print(f"  {name:<32s} {shape_str:<22s} {ptag:>10s}")
+
+        # Total.
+        buf_size = getattr(getattr(self.agent, 'memory', None), 'capacity', 0)
+        print(f"  {'─'*32} {'─'*22} {'─'*10}")
+        print(f"  {'Total':<32s} {'':<22s} {size_tag:>10s}")
+        if buf_size:
+            print(f"\n  Replay buffer capacity: {buf_size:,}")
+        print("=" * 60)
 
     def _resume(self, checkpoint_path: Optional[str] = None) -> int:
         """Resume training from a checkpoint. Returns the loaded step number."""
@@ -593,7 +692,9 @@ class Trainer:
 
         # --- Full path: collect + train + cache ---
         pretrainer = Pretrainer(model_type="dqn", num_actions=self.cfg.network.num_actions,
-                                feature_dim=self.cfg.network.feature_dim, device=str(self.device))
+                                feature_dim=self.cfg.network.feature_dim,
+                                model_size=self.cfg.network.model_size,
+                                device=str(self.device))
 
         tag = self.cfg.pretrain_sample_tag
         sample_path = _os.path.join(pretrainer.sample_dir, f"samples_{tag}.npz")
@@ -742,6 +843,7 @@ def _print_config(config: TrainingConfig, args):
 
     print("  ── Network ──")
     net = config.network
+    print(_kv("model_size", net.model_size))
     print(_kv("cnn_channels", net.cnn_channels))
     print(_kv("hidden_dim", net.hidden_dim))
     print(_kv("feature_dim", net.feature_dim))
@@ -763,9 +865,13 @@ def _print_config(config: TrainingConfig, args):
         print(_kv("use_hard_update", dqn.use_hard_update))
         print(_kv("replay_capacity", f"{dqn.replay_capacity:,}"))
         print(_kv("per_alpha", dqn.per_alpha))
+        print(_kv("per_reward_weight", dqn.per_reward_weight))
         print(_kv("per_beta_start", dqn.per_beta_start))
         print(_kv("per_beta_end", dqn.per_beta_end))
         print(_kv("per_beta_frames", f"{dqn.per_beta_frames:,}"))
+        print(_kv("loss_type", dqn.loss_type))
+        if dqn.loss_type == "huber":
+            print(_kv("huber_beta", dqn.huber_beta))
         print(_kv("grad_clip_norm", dqn.grad_clip_norm))
     else:
         ppo = config.ppo

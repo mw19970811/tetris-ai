@@ -193,16 +193,19 @@ class Pretrainer:
     """
 
     def __init__(self, model_type: str = "dqn", num_actions: int = 112,
-                 feature_dim: int = 53, lr: float = 1e-3, device: str = "cuda",
+                 feature_dim: int = 53, model_size: str = "small",
+                 lr: float = 1e-3, device: str = "cuda",
                  dellacherie_config: DellacherieConfig = None,
                  sample_dir: str = "pretrain_samples"):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.num_actions = num_actions
         self.model_type = model_type
+        self.model_size = model_size
         self.sample_dir = sample_dir
 
         if model_type == "dqn":
             self.model = DuelingDQN(num_actions=num_actions, feature_dim=feature_dim,
+                                     model_size=model_size,
                                      use_noisy=False).to(self.device)
         else:
             self.model = ActorCritic(num_actions=num_actions, feature_dim=feature_dim).to(self.device)

@@ -24,30 +24,38 @@ class EnvConfig:
 
 @dataclass
 class NetworkConfig:
+    model_size: str = "small"  # Preset key from agent.model.DUELING_PRESETS
+    # CNN: "small" | "medium" | "large"
+    # Transformer: "transformer_small" | "transformer_base" | "transformer_medium"
+    #            | "transformer_large" | "transformer_huge" | "transformer_giant"
+    #            | "transformer_mega"
     cnn_channels: int = 32
     hidden_dim: int = 128
     feature_dim: int = 53
     num_actions: int = 112
     use_noisy: bool = True
     sigma_init: float = 0.01  # Lower initial noise for conservative exploration
-    sigma_decay: float = 0.99999994  # Per-step sigma decay; σ → ~70% at 6M, ~39% at 15.6M steps
+    sigma_decay: float = 0.9999997  # Per-step σ decay; → ~41% at 3M, ~9% at 8M, ~1% at 15.6M
 
 
 @dataclass
 class DQNConfig:
     gamma: float = 0.99
     n_step: int = 5
-    lr: float = 2.5e-5  # Conservative: slower learning for stability
+    lr: float = 2.5e-5  # 10× lower than typical — prevents online drift between hard syncs
     batch_size: int = 256
     train_every: int = 4
-    target_update_freq: int = 8000
-    target_update_tau: float = 0.005
-    use_hard_update: bool = True  # Polyak soft updates (safer with large batch_size)
+    target_update_freq: int = 4000  # Periodic anchor hard-sync interval (for soft-sync mode)
+    target_update_tau: float = 0.001  # Polyak averaging coefficient per training step
+    use_hard_update: bool = False  # Soft sync (Polyak) every step; periodic hard anchor sync
     replay_capacity: int = 2_000_000  # Larger buffer for batch_size=256 (~4.4 GB RAM)
-    per_alpha: float = 0.6
+    per_alpha: float = 0.8  # Higher α = more aggressive prioritisation
     per_beta_start: float = 0.4
     per_beta_end: float = 1.0
     per_beta_frames: int = 3_000_000  # β anneals to 1.0 at ~77 % of total training updates
+    per_reward_weight: float = 0.5  # Hybrid priority: |reward| × weight competes with |td|^α
+    loss_type: str = "huber"  # "huber" (SmoothL1Loss) or "mse" (MSELoss)
+    huber_beta: float = 1.0  # SmoothL1Loss beta — L1←|td|≤β→L2 transition threshold
     grad_clip_norm: float = 10.0
 
 

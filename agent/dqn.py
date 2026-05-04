@@ -31,19 +31,23 @@ class RainbowDQN:
     def __init__(self,
                  num_actions: int = 112,
                  feature_dim: int = 53,
+                 model_size: str = "small",
                  gamma: float = 0.99,
                  n_step: int = 5,
                  lr: float = 6.25e-5,
                  batch_size: int = 32,
                  train_every: int = 4,
                  target_update_freq: int = 8000,
-                 target_update_tau: float = 0.005,
-                 use_hard_update: bool = True,
+                 target_update_tau: float = 0.001,
+                 use_hard_update: bool = False,
                  replay_capacity: int = 1_000_000,
-                 per_alpha: float = 0.6,
+                 per_alpha: float = 0.8,
                  per_beta_start: float = 0.4,
                  per_beta_end: float = 1.0,
                  per_beta_frames: int = 10_000_000,
+                 per_reward_weight: float = 0.5,
+                 loss_type: str = "huber",
+                 huber_beta: float = 1.0,
                  grad_clip_norm: float = 10.0,
                  use_noisy: bool = True,
                  sigma_init: float = 0.017,
@@ -58,6 +62,8 @@ class RainbowDQN:
         self.target_update_tau = target_update_tau
         self.use_hard_update = use_hard_update
         self.grad_clip_norm = grad_clip_norm
+        self.loss_type = loss_type
+        self.huber_beta = huber_beta
         self.sigma_decay = sigma_decay
         self._last_hard_sync_step = 0
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -65,7 +71,8 @@ class RainbowDQN:
         # Networks.
         self.online_net = DuelingDQN(
             num_actions=num_actions, feature_dim=feature_dim,
-            use_noisy=use_noisy, sigma_init=sigma_init
+            model_size=model_size,
+            use_noisy=use_noisy, sigma_init=sigma_init,
         ).to(self.device)
         self.target_net = deepcopy(self.online_net).to(self.device)
         self.target_net.eval()
@@ -78,6 +85,7 @@ class RainbowDQN:
             capacity=replay_capacity, alpha=per_alpha,
             beta_start=per_beta_start, beta_end=per_beta_end,
             beta_frames=per_beta_frames,
+            reward_weight=per_reward_weight,
         )
 
         # N-step buffers (one per environment in parallel setup).
@@ -183,9 +191,13 @@ class RainbowDQN:
         # Current Q values.
         current_q = self.online_net(board, features).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # Huber loss with importance sampling weights.
+        # Loss with importance sampling weights.
         td_errors = target - current_q
-        loss = (weights * F.smooth_l1_loss(current_q, target, reduction='none')).mean()
+        if self.loss_type == "mse":
+            loss = (weights * F.mse_loss(current_q, target, reduction='none')).mean()
+        else:
+            loss = (weights * F.smooth_l1_loss(current_q, target, reduction='none',
+                                                beta=self.huber_beta)).mean()
 
         # Update.
         self.optimizer.zero_grad()
@@ -193,8 +205,12 @@ class RainbowDQN:
         grad_norm = nn.utils.clip_grad_norm_(self.online_net.parameters(), self.grad_clip_norm)
         self.optimizer.step()
 
-        # Update priorities.
-        self.memory.update_priorities(indices, td_errors.abs().detach().cpu().numpy())
+        # Update priorities (hybrid: TD-error + reward).
+        self.memory.update_priorities(
+            indices,
+            td_errors.abs().detach().cpu().numpy(),
+            rewards.abs().detach().cpu().numpy(),
+        )
 
         # Target network update.
         self.train_step += 1

@@ -88,11 +88,17 @@ class SumTree:
 
 
 class PrioritizedReplayBuffer:
-    """PER buffer with rank-based prioritisation and importance-sampling correction."""
+    """PER buffer with hybrid priority and importance-sampling correction.
 
-    def __init__(self, capacity: int = 1_000_000, alpha: float = 0.6,
+    Hybrid priority:  p = max( |td|^alpha,  |reward| * reward_weight )
+    This prevents high-reward transitions (line clears) from being
+    drowned out by high-TD-error transitions (unexpected deaths).
+    """
+
+    def __init__(self, capacity: int = 1_000_000, alpha: float = 0.8,
                  beta_start: float = 0.4, beta_end: float = 1.0,
-                 beta_frames: int = 10_000_000, epsilon: float = 1e-6):
+                 beta_frames: int = 10_000_000, epsilon: float = 1e-6,
+                 reward_weight: float = 0.5):
         self.tree = SumTree(capacity)
         self.capacity = capacity
         self.alpha = alpha
@@ -100,18 +106,31 @@ class PrioritizedReplayBuffer:
         self.beta_end = beta_end
         self.beta_frames = beta_frames
         self.epsilon = epsilon
+        self.reward_weight = reward_weight
         self.max_priority = 1.0
+        self._init_priority = 1.0  # New transitions start at 1.0, not max
+
+    def _compute_priority(self, td_error: float, reward: float = 0.0) -> float:
+        """Hybrid priority: max of TD-based and reward-based priority."""
+        td_prio = (abs(td_error) + self.epsilon) ** self.alpha
+        rw_prio = abs(reward) * self.reward_weight
+        return max(td_prio, rw_prio, 1e-6)
 
     def add(self, state: Tuple[np.ndarray, np.ndarray], action: int,
             reward: float, next_state: Tuple[np.ndarray, np.ndarray],
             done: bool, td_error: Optional[float] = None):
         """Store transition with initial priority.
 
+        New transitions start at _init_priority (1.0) instead of
+        max_priority — this prevents fresh entries from dominating
+        sampling before their true TD-error is known.
+
         state, next_state are (board, features) tuples.
         """
-        priority = self.max_priority
         if td_error is not None:
-            priority = (abs(td_error) + self.epsilon) ** self.alpha
+            priority = self._compute_priority(td_error, reward)
+        else:
+            priority = self._init_priority
 
         trans = StoredTransition(
             board=state[0], features=state[1],
@@ -176,10 +195,13 @@ class PrioritizedReplayBuffer:
 
         return batch, indices, weights
 
-    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray):
-        """Update priorities based on new TD errors."""
-        for idx, td_error in zip(indices, td_errors):
-            priority = (abs(td_error) + self.epsilon) ** self.alpha
+    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray,
+                          rewards: Optional[np.ndarray] = None):
+        """Update priorities using hybrid TD+reward priority."""
+        if rewards is None:
+            rewards = np.zeros_like(td_errors)
+        for idx, td_error, reward in zip(indices, td_errors, rewards):
+            priority = self._compute_priority(float(td_error), float(reward))
             self.max_priority = max(self.max_priority, priority)
             self.tree.update(int(idx), priority)
 
@@ -202,17 +224,20 @@ class PrioritizedReplayBuffer:
             "beta_end": self.beta_end,
             "beta_frames": self.beta_frames,
             "epsilon": self.epsilon,
+            "reward_weight": self.reward_weight,
         }
 
     def load_state_dict(self, state: dict):
         """Restore buffer state from checkpoint."""
         self.capacity = state["capacity"]
-        self.alpha = state["alpha"]
-        self.beta_start = state["beta_start"]
-        self.beta_end = state["beta_end"]
-        self.beta_frames = state["beta_frames"]
-        self.epsilon = state["epsilon"]
+        self.alpha = state.get("alpha", 0.8)
+        self.beta_start = state.get("beta_start", 0.4)
+        self.beta_end = state.get("beta_end", 1.0)
+        self.beta_frames = state.get("beta_frames", 10_000_000)
+        self.epsilon = state.get("epsilon", 1e-6)
+        self.reward_weight = state.get("reward_weight", 0.5)
         self.max_priority = state["max_priority"]
+        self._init_priority = 1.0
         self.tree = SumTree(self.capacity)
         # Restore tree data — pad/truncate to match capacity.
         n = min(len(state["tree_data"]), self.capacity)

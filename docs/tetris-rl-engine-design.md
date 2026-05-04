@@ -1,6 +1,7 @@
 # 俄罗斯方块智能引擎 — 完整强化学习设计方案
 
-> **版本**: v1.0  
+> **版本**: v1.1  
+> **更新**: 多尺度 DuelingDQN 架构（CNN 3 组 + Transformer 7 组），Soft Sync 默认策略（τ=0.001）  
 > **目标**: 基于深度强化学习训练一个在标准 Tetris Guideline 规则下达到人类顶尖水平的俄罗斯方块 AI  
 > **参考实现**: `tetris/code.html`（10×20 棋盘, SRS 旋转系统, 7-bag 随机, 锁定延迟 500ms, 15 次移动重置上限）
 
@@ -543,11 +544,35 @@ env:
 将 Q 函数分解为状态价值 \(V(s)\) 和动作优势 \(A(s, a)\)：
 
 \[
-Q(s, a) = V(s) + \left(A(s, a) - \frac{1}{|A|}\sum_{a'} A(s, a')\right)
-\]
+Q(s, a) = V(s) + \left(A(s, a) - \frac{1}{|A|}\sum_{a'} A(s, a')\right)\]
 
 - **为什么用 Dueling**：在俄罗斯方块中，许多状态的价值与具体动作选择关系不大（例如棋盘几近全满时，任何动作价值都很低）。Dueling 可以更高效地学习状态价值，而不必为每个动作单独估计。
 - **优势函数均值归零化**：使用 mean 而非 max 做基线，保证数值稳定性且不改变相对排序。
+
+**多尺度架构配置**：
+
+DuelingDQN 支持通过 `model_size` 参数一键切换网络规模，共 **10 组预设**，覆盖 0.14M ~ 968M 参数范围：
+
+| Preset | 类型 | 参数量 | 说明 |
+|--------|------|--------|------|
+| `small` | CNN | 0.14M | CNN 32ch, hidden 128 — 基线 |
+| `medium` | CNN | 0.51M | CNN 64ch, hidden 256 — 推荐 |
+| `large` | CNN | 1.96M | CNN 128ch, hidden 512 |
+| `transformer_small` | Transformer | 0.67M | d=128, L=2 — 起手验证 |
+| `transformer_base` | Transformer | 5.8M | d=256, L=6 |
+| `transformer_medium` | Transformer | 23M | d=384, L=12 |
+| `transformer_large` | Transformer | 104M | d=640, L=20 — ~100M 级 |
+| `transformer_huge` | Transformer | 282M | d=896, L=28 |
+| `transformer_giant` | Transformer | 418M | d=1024, L=32 — ~500M 级 |
+| `transformer_mega` | Transformer | 968M | d=1280, L=48 — ~1B 级 |
+
+**Transformer 变体**使用 `BoardColumnTransformer` 替代 CNN 处理棋盘：
+- 将 10 列作为 token 序列（每列 22 维高度信息）
+- 通过 TransformerEncoder 学习列间交互（如哪些列组合能形成消行机会）
+- **Pre-LN**（`norm_first=True`）保证深层网络梯度稳定
+- **Global Residual**：投影输入绕过所有编码层，与输出相加后 LayerNorm
+- **DeepNorm 缩放初始化**：深层网络（>8 层）权重按 \((2L)^{-0.25}\) 缩放
+- Dropout 强制为 0（RL 训练中 Dropout 是稳定性的敌人）
 
 #### 3.2.3 Noisy Networks 替代 ε-Greedy
 
@@ -645,7 +670,8 @@ y_t = r_t + \gamma Q_{\text{target}}\left(s_{t+1}, \arg\max_a Q_{\text{online}}(
 
 - Online 网络 \(\theta\)：选择最优动作
 - Target 网络 \(\theta^-\)：评估该动作的值
-- Target 网络每 \(C = 8000\) 步硬更新一次（或使用 Polyak 平均软更新 \(\theta^- \leftarrow \tau\theta + (1-\tau)\theta^-\)，\(\tau=0.005\)）
+- 默认使用 **Polyak 软更新** \(\theta^- \leftarrow \tau\theta + (1-\tau)\theta^-\)，\(\tau=0.001\)，每个训练步执行一次。每 4000 步额外执行一次锚点硬同步（全量复制），防止长期漂移。
+- 软更新相比硬更新的优势：避免目标网络的阶跃变化导致 Q 值震荡，训练更稳定。
 
 #### 3.2.6 Multi-Step TD (N-step Return)
 
@@ -666,7 +692,7 @@ Algorithm: Rainbow DQN for Tetris
 Initialize:
     online network Q_θ, target network Q_θ⁻ ← Q_θ
     prioritized replay buffer D (capacity = 1M)
-    optimizer: Adam(lr=6.25e-5)
+    optimizer: Adam(lr=2.5e-5)
     global_step = 0
 
 Loop until convergence:
@@ -678,7 +704,7 @@ Loop until convergence:
         D.add((s, a, r, s', done), priority=|δ|)
         
         if global_step % 4 == 0:        # 每 4 个环境步训练一次
-            batch, indices, weights = D.sample(batch_size=32, β=β)
+            batch, indices, weights = D.sample(batch_size=256, β=β)
             Compute n-step targets y_t using Double DQN
             L = Σ w_i * huber_loss(y_i - Q_θ(s_i, a_i))
             Optimizer.zero_grad()
@@ -686,12 +712,13 @@ Loop until convergence:
             clip_grad_norm_(max_norm=10)
             Optimizer.step()
             Update priorities in D with new |δ_i|
+            
+            # Soft sync: Polyak averaging every training step
+            Q_θ⁻ ← τ·Q_θ + (1-τ)·Q_θ⁻   (τ = 0.001)
+            
+            if train_step % 4000 == 0:   # Periodic anchor hard sync
+                Q_θ⁻ ← Q_θ
         
-        if global_step % 8000 == 0:     # 目标网络更新
-            Q_θ⁻ ← Q_θ   (hard update)
-        
-        Decay ε → 0.01 (if using ε-greedy fallback)
-        Anneal β → 1.0
         global_step += 1
         s = s'
         if done: break
@@ -944,13 +971,15 @@ Actor ──gRPC──▶ Reverb Server ──gRPC──▶ Learner
 ```yaml
 # configs/training/dqn_rainbow.yaml
 training:
-  total_steps: 50_000_000        # 总训练步数
-  learning_rate: 6.25e-5         # Adam 学习率
-  batch_size: 32                 # 训练批大小
+  total_samples: 1_000_000_000   # 总训练样本数（batch-invariant）
+  # Derived: total_steps = total_samples × train_every / batch_size
+  learning_rate: 2.5e-5          # Adam 学习率（保守，配合大 batch）
+  batch_size: 256                # 训练批大小
   train_every: 4                 # 每 N 个环境步训练一次
   grad_clip_norm: 10.0           # 梯度裁剪
-  target_update_freq: 8000       # 目标网络硬更新频率
-  target_update_tau: null        # 软更新系数（与硬更新二选一）
+  target_update_freq: 4000       # 锚点硬同步间隔（软同步模式下）
+  target_update_tau: 0.001       # Polyak 软更新系数（每训练步执行）
+  use_hard_update: false         # false = 软同步（推荐）
 
 rl:
   gamma: 0.99                    # 折扣因子
@@ -971,10 +1000,13 @@ exploration:
   epsilon_decay: 1_000_000
 
 network:
-  cnn_channels: [32, 64, 64]     # CNN 通道数
-  cnn_kernel: 3                  # 卷积核大小
-  hidden_dim: 128                # 隐藏层维度
-  noisy_sigma_init: 0.017        # NoisyNet σ 初始化值
+  model_size: "medium"           # CNN: small | medium | large
+                                 # Transformer: transformer_small | transformer_base
+                                 #   | transformer_medium | transformer_large
+                                 #   | transformer_huge | transformer_giant
+                                 #   | transformer_mega
+  hidden_dim: 256                # 隐藏层维度（由 model_size 预设决定）
+  noisy_sigma_init: 0.01         # NoisyNet σ 初始化值
 ```
 
 #### 4.4.2 学习率调度

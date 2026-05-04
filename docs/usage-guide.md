@@ -1,7 +1,8 @@
 # Tetris AI 使用文档
 
-> **版本**: v1.3  
+> **版本**: v1.4  
 > **算法**: Rainbow DQN (Double + Dueling + PER + Noisy Nets + N-step TD) + PPO 备选  
+> **新增**: 多尺度 DuelingDQN 预设（CNN 3 组 + Transformer 7 组），Soft Sync 默认策略  
 > **目标**: 训练 AI 智能体在标准俄罗斯方块（Tetris Guideline）中达到人类顶尖水平
 
 ---
@@ -449,6 +450,48 @@ python scripts/export_model.py checkpoints/step_010000000.pt -o tetris_ai.onnx
 
 > **参考数据**：AI 慢速 1x 约 0.3 pps（每秒 0.3 个方块），即时 4x 可达 5-10 pps。人类熟练玩家约 0.5-1.0 pps。
 
+### 4.6 查看 Replay Buffer
+
+训练过程中可随时浏览 buffer 中的 transition，检查样本质量和局面多样性。
+
+```bash
+# 交互模式：加载 buffer 文件，用方向键浏览
+python tools/inspect_buffer.py checkpoints/step_000010000_buffer.pt
+
+# 非交互模式：打印前 20 条，快速扫一眼
+python tools/inspect_buffer.py checkpoints/step_000010000_buffer.pt -l 20
+```
+
+**交互界面**：每个 transition 显示：
+
+- **BEFORE 棋盘**（动作前）— 白色 `■` = 已占据，灰色 `·` = 空
+- **AFTER 棋盘**（动作后）— 绿色 `■` = 新放置的方块，黄色行 = 被消除的行
+- **动作信息** — rotation / column / hold / reward / done
+- **方块信息** — current piece / hold / next queue，及六大特征值
+
+**键盘操作**：
+
+| 按键 | 功能 |
+|------|------|
+| `←` `→` / `↑` `↓` | 前/后一个 transition |
+| `PgUp` / `PgDn` | 前/后 10 个 |
+| `Home` / `End` | 跳到第一个 / 最后一个 |
+| `g` | 输入索引号跳转 |
+| `f` | 切换过滤模式（all / done / live / reward+ / reward-） |
+| `q` | 退出 |
+
+**过滤模式**：
+
+| 模式 | 显示 |
+|------|------|
+| `all` | 所有 transition |
+| `done` | 仅 episode 结束的 transition |
+| `live` | 仅 episode 进行中的 transition |
+| `reward+` | reward > 0（正样本） |
+| `reward-` | reward < 0（负样本） |
+
+> **依赖**：仅需 `numpy` + `torch`（项目已安装），不需额外安装任何包。
+
 ---
 
 ## 五、算法说明
@@ -568,9 +611,10 @@ y_t = r_t + \gamma \cdot Q_{\text{target}}\left(s_{t+1}, \arg\max_a Q_{\text{onl
 
 - Online 网络选择最优动作
 - Target 网络评估该动作的值
-- Target 网络每 8000 步硬更新（或使用 Polyak 软更新，\(\tau = 0.005\)）
+- 默认使用 **Polyak 软更新**：\(\theta^- \leftarrow \tau\theta + (1-\tau)\theta^-\)，\(\tau=0.001\)，每训练步执行一次
+- 每 4000 步额外执行一次锚点硬同步，防止长期漂移
 
-**代码位置**：`agent/dqn.py` 第 139-145 行
+**代码位置**：`agent/dqn.py` 第 176-221 行
 
 #### 5.2.2 Dueling Network — 状态价值与动作优势分解
 
@@ -582,21 +626,38 @@ Q(s, a) = V(s) + \left(A(s, a) - \frac{1}{|A|}\sum_{a'} A(s, a')\right)
 
 **为什么有效**：在俄罗斯方块中，许多状态的价值与具体动作选择关系不大（例如棋盘几乎全满时，任何动作价值都很低）。Dueling 架构可以更高效地学习状态价值。
 
-**网络结构**：
+**网络结构**（可通过 `model_size` 切换规模）：
 
 ```
-Board (1,22,10) ──▶ CNN (3层 Conv 32→64→64) ──▶ GlobalAvgPool → 64d ──┐
-                                                                          ├── Concat(128d) ──▶ Dueling Head
-Features (53d)  ──▶ MLP (53→128→64) ──────────────────────────────────┘
-                                                                          │
-                                                    ┌── Value Stream ────┤
-                                                    │  128→64→1          │
-                                                    │                    ├── Q(s,a)
-                                                    └── Advantage Stream─┘
-                                                       128→64→|A|
+Board (1,22,10) ──▶ Encoder (CNN / ColumnTransformer) ──▶ embed_dim ──┐
+                                                                        ├── Concat ──▶ Dueling Head
+Features (53d)  ──▶ MLP (53→hidden→embed_dim) ───────────────────────┘
+                                                                        │
+                                                  ┌── Value Stream ────┤
+                                                  │  hidden→hidden/2→1 │
+                                                  │                    ├── Q(s,a)
+                                                  └── Advantage Stream─┘
+                                                     hidden→hidden/2→|A|
 ```
 
-**代码位置**：`agent/model.py` 第 65-118 行
+**10 组预设配置**（通过 `configs/training/dqn_rainbow.yaml` → `network.model_size` 切换）：
+
+| model_size | 类型 | 参数量 | 说明 |
+|------------|------|--------|------|
+| `small` | CNN 32ch | 0.14M | 基线 |
+| `medium` | CNN 64ch | 0.51M | **推荐默认** |
+| `large` | CNN 128ch | 1.96M | |
+| `transformer_small` | d=128, L=2 | 0.67M | 起手验证 |
+| `transformer_base` | d=256, L=6 | 5.8M | |
+| `transformer_medium` | d=384, L=12 | 23M | |
+| `transformer_large` | d=640, L=20 | 104M | ~100M 级 |
+| `transformer_huge` | d=896, L=28 | 282M | |
+| `transformer_giant` | d=1024, L=32 | 418M | ~500M 级 |
+| `transformer_mega` | d=1280, L=48 | 968M | ~1B 级 |
+
+Transformer 变体将 10 列棋盘作为 token 序列，通过自注意力学习列间交互。使用 Pre-LN + Global Residual + DeepNorm 初始化保证深层训练稳定。
+
+**代码位置**：`agent/model.py` — `DuelingDQN` 类 + `DUELING_PRESETS` 字典
 
 #### 5.2.3 Prioritized Experience Replay (PER) — 按重要性采样
 
@@ -680,7 +741,7 @@ Algorithm: Rainbow DQN for Tetris
 Initialize:
     online network Q_θ, target network Q_θ⁻ ← Q_θ
     prioritized replay buffer D (capacity = 1M, SumTree)
-    optimizer: Adam(lr=6.25e-5)
+    optimizer: Adam(lr=2.5e-5)
 
 Loop until convergence:
     s = env.reset()
@@ -691,14 +752,17 @@ Loop until convergence:
         D.add((s,a,r,s',done), priority=|δ|)
 
         if step % 4 == 0:
-            batch, indices, weights = D.sample(32)
+            batch, indices, weights = D.sample(256)
             Compute n-step targets via Double DQN
             L = Σ w_i · HuberLoss(target_i - Q_θ(s_i, a_i))
             Optimize(L)
             Update priorities in D
-
-        if step % 8000 == 0:
-            Q_θ⁻ ← Q_θ  (hard sync)
+            
+            # Soft sync: Polyak averaging every training step
+            Q_θ⁻ ← τ·Q_θ + (1-τ)·Q_θ⁻   (τ = 0.001)
+            
+            if train_step % 4000 == 0:   # Anchor hard sync
+                Q_θ⁻ ← Q_θ
 
         s = s'
         if done: break
@@ -892,27 +956,52 @@ python scripts/train.py --device cuda --envs 64 --algo dqn
 | `lr` | 2.5e-5 | 学习率（保守，适配 batch_size=256） |
 | `batch_size` | 256 | 训练批大小 |
 | `train_every` | 4 | 每 N 环境步训练一次 |
-| `target_update_freq` | 8000 | 目标网络硬更新频率（仅 `use_hard_update=true` 时生效） |
-| `target_update_tau` | 0.005 | 软更新系数 τ |
-| `use_hard_update` | **false** | Polyak 软更新（推荐；避免灾难性遗忘） |
-| `replay_capacity` | 1,000,000 | 回放缓冲区容量 |
+| `target_update_freq` | 4000 | 锚点硬同步间隔（软同步模式下每 N 训练步硬同步一次） |
+| `target_update_tau` | **0.001** | Polyak 软更新系数 τ（每训练步执行） |
+| `use_hard_update` | **false** | Polyak 软更新（推荐）；设 true 切回硬更新 |
+| `replay_capacity` | 2,000,000 | 回放缓冲区容量 |
 | `per_alpha` | 0.6 | PER 优先级指数 |
 | `per_beta_start` | 0.4 | IS 修正初始值 |
 | `per_beta_end` | 1.0 | IS 修正最终值 |
-| `per_beta_frames` | 10,000,000 | β 衰减帧数 |
+| `per_beta_frames` | 3,000,000 | β 衰减帧数 |
 | `grad_clip_norm` | 10.0 | 梯度裁剪阈值 |
 
 ### 6.3 Network 配置 (NetworkConfig)
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `cnn_channels` | 32 | CNN 通道数 |
-| `hidden_dim` | 128 | MLP 隐藏维度 |
+| `model_size` | `"small"` | 网络规模预设。CNN: `small` \| `medium` \| `large`；Transformer: `transformer_small` \| `transformer_base` \| `transformer_medium` \| `transformer_large` \| `transformer_huge` \| `transformer_giant` \| `transformer_mega` |
+| `cnn_channels` | 32 | CNN 通道数（CNN 预设时由 `model_size` 决定） |
+| `hidden_dim` | 128 | MLP 隐藏维度（CNN 预设时由 `model_size` 决定） |
 | `feature_dim` | 53 | 手工特征维度 |
 | `num_actions` | 112 | 最大动作数 |
 | `use_noisy` | true | 使用 NoisyNet（学习型探索） |
 | `sigma_init` | **0.01** | NoisyNet 初始噪声（保守，配合大 batch_size） |
-| `sigma_decay` | **0.99999994** | 每训练步 σ 衰减系数；优先保护早期探索，15.6M 步后 σ 约 39% |
+| `sigma_decay` | **0.9999997** | 每训练步 σ 衰减系数；15.6M 步后 σ 约 1% |
+
+**model_size 预设参数详情**：
+
+CNN 预设（Board 编码器 = CNNBackbone）：
+
+| 预设 | cnn_channels | hidden_dim | 参数量 |
+|------|-------------|------------|--------|
+| `small` | 32 | 128 | 0.14M |
+| `medium` | 64 | 256 | 0.51M |
+| `large` | 128 | 512 | 1.96M |
+
+Transformer 预设（Board 编码器 = BoardColumnTransformer，Pre-LN + Global Residual）：
+
+| 预设 | d_model | layers | heads | ff_dim | hidden_dim | 参数量 |
+|------|---------|--------|-------|--------|------------|--------|
+| `transformer_small` | 128 | 2 | 4 | 512 | 256 | 0.67M |
+| `transformer_base` | 256 | 6 | 8 | 1024 | 512 | 5.8M |
+| `transformer_medium` | 384 | 12 | 8 | 1536 | 768 | 23M |
+| `transformer_large` | 640 | 20 | 10 | 2560 | 1280 | 104M |
+| `transformer_huge` | 896 | 28 | 14 | 3584 | 1792 | 282M |
+| `transformer_giant` | 1024 | 32 | 16 | 4096 | 2048 | 418M |
+| `transformer_mega` | 1280 | 48 | 16 | 5120 | 2560 | 968M |
+
+> **Transformer 显存建议**：`transformer_large`(104M) ≥12GB，`transformer_giant`(418M) ≥24GB，`transformer_mega`(968M) ≥40GB 且需要 gradient checkpointing。
 
 ### 6.4 PPO 配置 (PPOConfig)
 
@@ -1221,13 +1310,16 @@ inference/cpp/
 
 **根因**（已验证）：
 1. **奖励塑形惩罚过重**：`w_holes=1.5` 等惩罚权重导致 agent 学到"快速死亡"策略来规避惩罚
-2. **硬更新 + 大批量**：`use_hard_update=true` 配合 `batch_size=256`，在线网络快速漂移但 target 冻结 8000 步，Double DQN 无法纠正
+2. **学习率过高 + 硬更新间隔过长**：`lr=2.5e-4` 配合 `batch_size=256`，online 网络每步漂移大，target 冻结 8000 步后一次性覆盖，Double DQN 无法纠正
 
 **修复步骤**（按优先级）：
 1. 将 `w_height/w_holes/w_bumpiness/w_well` 全部设为 0.0（诊断期排除奖励问题）
-2. 设 `use_hard_update: false`（Polyak 软更新, τ=0.005）
-3. 降低学习率到 `2.5e-5`，降低 `sigma_init` 到 `0.01`
-4. 确认 `batch_size=256` 配合以上参数稳定后，再逐步恢复惩罚权重
+2. 降低学习率到 `2.5e-5`（10× 降低 → online 漂移速度 10× 降低）
+3. 缩短 `target_update_freq` 到 `4000`（减半 target 过期窗口）
+4. `sigma_init=0.01`，`sigma_decay=0.9999997`（适度衰减噪声）
+5. 确认 `batch_size=256` 配合以上参数稳定后，再逐步恢复惩罚权重
+
+> **硬更新 vs 软更新**：当前默认使用 **Polyak 软更新**（τ=0.001，每训练步执行）+ 周期性锚点硬同步（每 4000 步）。软更新通过 Polyak 移动平均天然避免目标网络阶跃，训练更稳定。如需切回硬更新，设 `use_hard_update: true`。
 
 ### Q: 训练意外中断后如何恢复？
 ```bash
@@ -1268,6 +1360,31 @@ pytest tests/ -v
 # 根目录的 test_env.py 为历史遗留副本，请使用 tests/ 下的正式测试
 ```
 注意：根目录下的 `test_env.py` 是 `tests/test_env.py` 的历史重复文件，统一使用 `tests/` 目录下的测试。
+
+### Q: 如何使用 Transformer 变体训练？
+
+在 `configs/training/dqn_rainbow.yaml` 中修改一行即可切换：
+
+```yaml
+network:
+  model_size: "transformer_base"   # 从 "medium" 切换为 transformer
+```
+
+**渐进式升级路径**：
+
+```
+第 1 步：transformer_small (0.67M) → 验证代码能跑通，Q 值不爆炸
+第 2 步：transformer_base  (5.8M)  → 对比 CNN medium 的分数
+第 3 步：transformer_large (104M)  → 如果分数持续超越 CNN，说明方向正确
+第 4 步：transformer_giant (418M)  → 需要 24GB+ 显存，确保 batch_size 足够
+```
+
+**关键注意事项**：
+- Transformer 初期学习更慢（Step 0-10K 分数可能低于 CNN），需要耐心
+- 一旦学到列间交互模式，分数上升非常陡峭
+- 如果出现 NaN：优先降 lr 到 `1e-5`，其次增大 `grad_clip_norm`
+- 深层 transformer（>12 层）已经内置 Pre-LN 和 DeepNorm 初始化，但仍需谨慎调参
+- 建议先在 `transformer_small` 上验证稳定性，再逐步升级
 
 ### Q: 已知限制
 1. **PPO 训练**：当前 Rainbow DQN 是主要验证的算法路径。PPO 可通过 `--algo ppo` 使用，但训练效果未经充分验证
@@ -1326,19 +1443,22 @@ cmake --build . --target tetris_core --config Release --verbose
 
 ### 10.1 当前诊断配置状态
 
-以下为当前生效的关键参数（`configs/training/dqn_rainbow.yaml`）：
+以下为当前生效的关键参数（`trainer/config.py` 默认值，YAML 暂未接入加载流程）：
 
 ```yaml
 training:
   total_samples: 1_000_000_000   # → 约 15.6M env steps
 dqn:
-  lr: 2.5e-5                     # 保守学习率
-  batch_size: 256                # 大批量（8× 旧值）
-  use_hard_update: false         # Polyak 软更新（关键！）
-  target_update_tau: 0.005
+  lr: 2.5e-5                     # 保守学习率（10× 降低）
+  batch_size: 256                # 大批量
+  train_every: 4                 # 每 4 环境步训练一次
+  use_hard_update: false         # Soft sync (Polyak averaging every training step)
+  target_update_freq: 4000       # 每 4000 训练步锚点硬同步
+  target_update_tau: 0.001       # 软更新系数 τ
 network:
+  model_size: "medium"           # 网络规模预设（可选 CNN/Transformer 多组）
   sigma_init: 0.01               # 保守噪声
-  sigma_decay: 0.99999994         # 缓慢衰减，末期 ~39%
+  sigma_decay: 0.9999997         # 每步衰减；3M 步 → 41%，15.6M → ~1%
 env:
   reward_weights:
     w_height: 0.0                # 诊断期归零
@@ -1352,8 +1472,11 @@ env:
 ### 10.2 训练启动
 
 ```bash
-# 默认配置（推荐）
+# 默认配置（推荐，CNN medium + soft sync）
 python scripts/train.py --device cuda --envs 64
+
+# 切换到 Transformer 变体（修改 configs/training/dqn_rainbow.yaml 中的 model_size）
+# network.model_size: "transformer_base"
 
 # 快速验证（1000 步，约 3 分钟）
 python scripts/train.py --device cuda --envs 64 --steps 1000
