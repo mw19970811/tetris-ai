@@ -169,6 +169,11 @@ class Trainer:
                 use_noisy=self.cfg.network.use_noisy,
                 sigma_init=self.cfg.network.sigma_init,
                 sigma_decay=self.cfg.network.sigma_decay,
+                exploration_type=self.cfg.network.exploration_type,
+                epsilon_start=self.cfg.network.epsilon_start,
+                epsilon_end=self.cfg.network.epsilon_end,
+                epsilon_decay_steps=self.cfg.network.epsilon_decay_steps,
+                epsilon_warmup_steps=self.cfg.network.epsilon_warmup_steps,
                 device=str(self.device),
             )
         elif self.cfg.algorithm == "ppo":
@@ -501,13 +506,16 @@ class Trainer:
                 buf_size = len(self.agent.memory) if hasattr(self.agent, 'memory') else 0
                 dead_rate = (dead_count / max(step - start_step, 1)) * 100.0
 
-                # Current NoisyLinear sigma mean (for monitoring decay).
+                # Current exploration level (sigma for NoisyNets, epsilon for ε-greedy).
                 sigma_mean = 0.0
+                current_epsilon = 0.0
                 if hasattr(self.agent, 'online_net'):
                     sigma_mean = sum(
                         m.get_sigma_mean() for m in self.agent.online_net.modules()
                         if hasattr(m, 'get_sigma_mean')
                     )
+                if hasattr(self.agent, 'eps_scheduler') and self.agent.eps_scheduler is not None:
+                    current_epsilon = self.agent.eps_scheduler.get_epsilon(self.agent.env_step)
 
                 # Collect latest training metrics for progress line + TensorBoard.
                 last_w_mean = last_prio_mean = last_rw_prio = last_init_prio = 0.0
@@ -523,9 +531,16 @@ class Trainer:
                     dead_count=dead_count, dead_rate=dead_rate,
                     avg_pieces=avg_pieces, avg_score=avg_score,
                     avg_steps=avg_steps, sigma_mean=sigma_mean,
+                    epsilon=current_epsilon,
                     w_mean=last_w_mean, td_prio_mean=last_prio_mean,
                     rw_prio_mean=last_rw_prio,
                 )
+
+                # Exploration indicator: sigma for NoisyNets, epsilon for ε-greedy.
+                if current_epsilon > 0:
+                    explore_str = f"ε={current_epsilon:.4f}"
+                else:
+                    explore_str = f"σ={sigma_mean:.5f}"
 
                 print(f"\r[{_timestamp()}]  "
                       f"Step {step:>9,}/{total_steps:,} ({progress:.1%})  "
@@ -533,7 +548,7 @@ class Trainer:
                       f"|  Steps: {avg_steps:>5.0f}/ep  "
                       f"|  Pieces: {avg_pieces:>5.0f}/ep  "
                       f"|  Dead: {dead_count:>5} ({dead_rate:.0f}%)  "
-                      f"|  Sigma: {sigma_mean:.5f}  "
+                      f"|  {explore_str}  "
                       f"|  FPS: {fps:>7,.0f}", end="")
                 # PER diagnostics line.
                 if last_prio_mean > 0:
@@ -719,16 +734,20 @@ class Trainer:
         # --- Fast path: load cached pretrained weights if compatible ---
         if _os.path.exists(weights_path):
             current_size = self.cfg.network.model_size
+            current_noisy = self.cfg.network.use_noisy
             cached_size = None
+            cached_noisy = None
             if _os.path.exists(meta_path):
                 try:
                     with open(meta_path) as f:
-                        cached_size = _json.load(f).get("model_size")
+                        meta = _json.load(f)
+                        cached_size = meta.get("model_size")
+                        cached_noisy = meta.get("use_noisy")
                 except Exception:
                     pass
 
             if cached_size is not None:
-                if cached_size == current_size:
+                if cached_size == current_size and cached_noisy == current_noisy:
                     print(f"[Pretrain] Loading cached pretrained weights from {weights_path} ...")
                     converted = torch.load(weights_path, map_location="cpu")
                     try:
@@ -736,14 +755,14 @@ class Trainer:
                             self.agent.online_net.load_state_dict(converted)
                             self.agent.target_net.load_state_dict(converted)
                         print("[Pretrain] Skipped data collection + BC training "
-                              f"(cached weights loaded, model_size={current_size}).")
+                              f"(cached weights loaded, model_size={current_size}, use_noisy={current_noisy}).")
                         return
                     except RuntimeError as e:
                         print(f"[Pretrain] Cached weights incompatible: {e}")
                         print("[Pretrain] Deleting stale cache and retraining...")
                 else:
-                    print(f"[Pretrain] model_size changed ({cached_size} -> {current_size})"
-                          f" -- cache invalid, retraining...")
+                    print(f"[Pretrain] Config changed (size: {cached_size}→{current_size}, "
+                          f"noisy: {cached_noisy}→{current_noisy}) — cache invalid, retraining...")
                 # Delete stale cache.
                 for p in [weights_path, meta_path]:
                     if _os.path.exists(p):
@@ -789,10 +808,14 @@ class Trainer:
         # Load pretrained weights into agent.
         if self.cfg.algorithm == "dqn" and hasattr(self.agent, 'online_net'):
             noisy_prefixes = ('value_fc.', 'advantage_fc.')
+            use_noisy_model = any(
+                hasattr(m, 'weight_mu')
+                for m in self.agent.online_net.modules()
+            )
             converted = {}
             sigma_init = self.cfg.network.sigma_init
             for key, tensor in state_dict.items():
-                is_noisy = any(key.startswith(p) for p in noisy_prefixes)
+                is_noisy = use_noisy_model and any(key.startswith(p) for p in noisy_prefixes)
                 if is_noisy and key.endswith('.weight'):
                     converted[key.replace('.weight', '.weight_mu')] = tensor
                     converted[key.replace('.weight', '.weight_sigma')] = torch.full_like(tensor, sigma_init)
@@ -809,9 +832,10 @@ class Trainer:
             _os.makedirs("pretrain_samples", exist_ok=True)
             torch.save(converted, weights_path)
             with open(meta_path, "w") as f:
-                _json.dump({"model_size": self.cfg.network.model_size}, f)
+                _json.dump({"model_size": self.cfg.network.model_size,
+                            "use_noisy": use_noisy_model}, f)
             print(f"[Pretrain] Cached pretrained weights to {weights_path} "
-                  f"(model_size={self.cfg.network.model_size}).")
+                  f"(model_size={self.cfg.network.model_size}, use_noisy={use_noisy_model}).")
             print("[Pretrain] Loaded pretrained weights into online + target networks.")
 
     # ------------------------------------------------------------------ #
@@ -915,9 +939,15 @@ def _print_config(config: TrainingConfig, args):
     print(_kv("hidden_dim", net.hidden_dim))
     print(_kv("feature_dim", net.feature_dim))
     print(_kv("num_actions", net.num_actions))
+    print(_kv("exploration_type", net.exploration_type))
     print(_kv("use_noisy", net.use_noisy))
     print(_kv("sigma_init", net.sigma_init))
     print(_kv("sigma_decay", net.sigma_decay))
+    if net.exploration_type == "epsilon_greedy":
+        print(_kv("epsilon_start", net.epsilon_start))
+        print(_kv("epsilon_end", net.epsilon_end))
+        print(_kv("epsilon_decay_steps", f"{net.epsilon_decay_steps:,}"))
+        print(_kv("epsilon_warmup_steps", f"{net.epsilon_warmup_steps:,}"))
 
     print(f"  ── {config.algorithm.upper()} ──")
     if config.algorithm == "dqn":

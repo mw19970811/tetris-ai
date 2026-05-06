@@ -64,9 +64,20 @@ network:
   hidden_dim: 256
   feature_dim: 53
   num_actions: 112
+
+  # Exploration: "noisy" (NoisyNets) or "epsilon_greedy" (ε-greedy + warmup)
+  exploration_type: "epsilon_greedy"
+
+  # NoisyNets params (only used when exploration_type == "noisy")
   use_noisy: true
   sigma_init: 0.01            # NoisyNet initial noise (conservative)
   sigma_decay: 0.9999997      # Per-step sigma decay; ~41% at 3M, ~1% at 15.6M
+
+  # ε-greedy params (only used when exploration_type == "epsilon_greedy")
+  epsilon_start: 0.5           # ε after warmup ends
+  epsilon_end: 0.01            # Minimum ε (retain 1% exploration)
+  epsilon_decay_steps: 5_000_000  # Env steps over which ε decays
+  epsilon_warmup_steps: 200_000   # Env steps with ε=0 (pure greedy)
 
 env:
   use_cpp_env: true

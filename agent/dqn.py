@@ -11,6 +11,8 @@ Combines:
 Training: off-policy, updates every `train_every` environment steps.
 """
 
+import math
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -23,6 +25,27 @@ from .model import DuelingDQN
 from .memory import PrioritizedReplayBuffer, UniformReplayBuffer
 from .nstep_buffer import NStepBuffer
 from .action_mask import create_action_mask, mask_logits, encode_action, decode_action
+
+
+class EpsilonGreedyScheduler:
+    """ε-greedy exploration with warmup and exponential decay.
+
+    Warmup phase: ε = 0 (pure exploitation) to stabilise on pretrained policy.
+    After warmup: ε decays exponentially from *start* to *end* over *decay_steps*.
+    """
+
+    def __init__(self, epsilon_start: float = 0.5, epsilon_end: float = 0.01,
+                 decay_steps: int = 5_000_000, warmup_steps: int = 200_000):
+        self.epsilon_start = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.decay_steps = decay_steps
+        self.warmup_steps = warmup_steps
+
+    def get_epsilon(self, env_step: int) -> float:
+        if env_step < self.warmup_steps:
+            return 0.0
+        progress = (env_step - self.warmup_steps) / self.decay_steps
+        return self.epsilon_end + (self.epsilon_start - self.epsilon_end) * math.exp(-progress * 5)
 
 
 class RainbowDQN:
@@ -55,6 +78,11 @@ class RainbowDQN:
                  use_noisy: bool = True,
                  sigma_init: float = 0.017,
                  sigma_decay: float = 1.0,
+                 exploration_type: str = "noisy",
+                 epsilon_start: float = 0.5,
+                 epsilon_end: float = 0.01,
+                 epsilon_decay_steps: int = 5_000_000,
+                 epsilon_warmup_steps: int = 200_000,
                  device: str = "cuda"):
         self.num_actions = num_actions
         self.gamma = gamma
@@ -69,6 +97,18 @@ class RainbowDQN:
         self.huber_beta = huber_beta
         self.sigma_decay = sigma_decay
         self._last_hard_sync_step = 0
+
+        # Exploration strategy.
+        self.exploration_type = exploration_type
+        if exploration_type == "epsilon_greedy":
+            use_noisy = False  # ε-greedy replaces NoisyNets entirely
+            self.eps_scheduler = EpsilonGreedyScheduler(
+                epsilon_start=epsilon_start, epsilon_end=epsilon_end,
+                decay_steps=epsilon_decay_steps, warmup_steps=epsilon_warmup_steps,
+            )
+        else:
+            self.eps_scheduler = None
+
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
 
         # Networks.
@@ -117,6 +157,18 @@ class RainbowDQN:
         if not mask.any():
             return 0, 0, False, 0
 
+        # ε-greedy: random legal action with probability ε (skip forward pass).
+        if self.exploration_type == "epsilon_greedy" and not deterministic:
+            eps = self.eps_scheduler.get_epsilon(self.env_step)
+            if random.random() < eps:
+                action = random.choice(legal_actions)
+                if hasattr(action, 'rotation'):
+                    rot, col, hold = action.rotation, action.column, action.hold
+                else:
+                    rot, col, hold = action
+                action_idx = encode_action(rot, col, hold)
+                return rot, col, hold, action_idx
+
         board_t = torch.as_tensor(board, dtype=torch.float32, device=self.device).unsqueeze(0)
         feat_t = torch.as_tensor(features, dtype=torch.float32, device=self.device).unsqueeze(0)
 
@@ -154,6 +206,24 @@ class RainbowDQN:
 
         q_values = self.online_net(board_t, feat_t)   # (N, 112)
         masked_q = torch.where(masks, q_values, torch.full_like(q_values, -1e9))
+
+        # ε-greedy: per-env random legal action with probability ε.
+        if self.exploration_type == "epsilon_greedy":
+            eps = self.eps_scheduler.get_epsilon(self.env_step)
+            results = []
+            for i, legal in enumerate(legal_actions_list):
+                if legal and random.random() < eps:
+                    action = random.choice(legal)
+                    if hasattr(action, 'rotation'):
+                        rot, col, hold = action.rotation, action.column, action.hold
+                    else:
+                        rot, col, hold = action
+                    action_idx = encode_action(rot, col, hold)
+                else:
+                    action_idx = int(masked_q[i].argmax().item())
+                    rot, col, hold = decode_action(action_idx)
+                results.append((rot, col, hold, action_idx))
+            return results
 
         action_indices = masked_q.argmax(dim=-1).tolist()
 

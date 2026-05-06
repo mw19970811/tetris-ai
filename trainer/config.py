@@ -33,9 +33,16 @@ class NetworkConfig:
     hidden_dim: int = 128
     feature_dim: int = 53
     num_actions: int = 112
+    # Exploration: "noisy" (NoisyNets) or "epsilon_greedy" (ε-greedy + warmup)
+    exploration_type: str = "noisy"
     use_noisy: bool = True
     sigma_init: float = 0.01  # Lower initial noise for conservative exploration
     sigma_decay: float = 0.9999997  # Per-step σ decay; → ~41% at 3M, ~9% at 8M, ~1% at 15.6M
+    # ε-greedy params (only used when exploration_type == "epsilon_greedy")
+    epsilon_start: float = 0.5        # ε after warmup ends
+    epsilon_end: float = 0.01         # Minimum ε (retain 1% exploration)
+    epsilon_decay_steps: int = 5_000_000  # Env steps over which ε decays
+    epsilon_warmup_steps: int = 200_000   # Env steps with ε=0 (pure greedy)
 
 
 @dataclass

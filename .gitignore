@@ -1,5 +1,7 @@
 # vscode
 .vscode/
+# claude code
+CLAUDE.md
 # Python
 __pycache__/
 *.pyc
@@ -27,6 +29,23 @@ dist/
 *.so
 *.dll
 *.exe
+env/core/testPieces/
+*.vcxproj.user
+*.vcxproj.filters
+*.vcxproj
 # Git
 .git/
 .gitignore
+# Checkpoints and logs
+checkpoints/
+logs/
+pretrain_samples/
+# Other
+*.log
+*.tmp
+*.bak
+*.swp
+*.zip
+# 3rd projects
+third_party/
+other-projects/

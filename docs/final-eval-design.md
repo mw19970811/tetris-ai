@@ -55,3 +55,55 @@ for i in 0..199:
 - `trainer/evaluator.py` — `head_to_head()` 新增方法
 - `trainer/trainer.py` — 训练结束调用，替换现有 `_eval_dellacherie` 独立评估
 - `agent/dellacherie.py` — `run_episode()` 复用（已存在）
+
+---
+
+## 稳健性压力测试（待实现）
+
+标准 head-to-head 评估（空棋盘、同种子）衡量的是"最优条件下的性能"。但 RL agent 相对于 Dellacherie 的**核心优势**在于全局规划能力和恢复策略——这些只能在恶劣初始条件下体现。
+
+Dellacherie 是贪婪算法，只做局部最优选择。在混乱棋盘上，它没有"先填平、再挖井"的规划能力。如果 RL agent 真正学会了通用策略，应在压力测试中展示显著的恢复优势。
+
+### 测试 A：随机填充初始棋盘
+
+```
+for i in 0..199:
+    env_agent.reset(seed=i); env_dl.reset(seed=i)
+
+    # 随机放置 N 个方块（双方相同的随机序列）
+    for _ in range(N_blocks):
+        action = random.choice(legal_actions)
+        env_agent.step(action)  # 不记录分数
+        env_dl.step(action)
+
+    # 从混乱状态开始正式评估
+    while not done:
+        agent: argmax → env_agent.step()
+        dl:    argmax → env_dl.step()
+```
+
+建议测试 `N_blocks ∈ {5, 10, 20}` 三种难度。
+
+### 测试 B：故意制造深井
+
+在棋盘特定列（如 column 0 或 column 9）预先放置方块制造 3-5 格深的井。测试 agent 是否能执行"填井 → Tetris"策略——这是对 Tetris 理解能力的终极测试。
+
+### 测试 C：垃圾行注入
+
+在棋盘底部以上随机位置塞入"垃圾行"（每行含一个随机空格），模拟对战游戏中的被攻击场景。测试 agent 的生存能力和创造性恢复。
+
+### 压力测试指标
+
+| 指标 | 标准测试 | 压力测试 |
+|------|---------|---------|
+| Win Rate vs DL | 衡量最优性能 | 衡量**鲁棒性**和**恢复能力** |
+| 预期结果 | Agent 略优 | **Agent 显著优于 DL**（差距随 N 增大而增大）|
+| 如果结果相反 | 策略可能过拟合 | 确认了策略缺乏通用性 |
+
+> **核心理念**：如果 RL agent 在压力测试中无法显著超越 Dellacherie，说明它学到的不是通用恢复策略，而仅仅是在干净棋盘上做最优放置。
+
+### 实现
+
+- `trainer/evaluator.py` — 新增 `stress_test()` 方法
+- `scripts/eval.py` — 新增 `--stress` CLI 参数
+- `env/tetris_env.py` — 可能需要添加 `load_board()` 或 `inject_garbage()` 方法

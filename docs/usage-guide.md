@@ -560,6 +560,29 @@ A = { (rotation ∈ {0,1,2,3}, column ∈ [-2, …, 11], hold ∈ {true, false})
 > 3. 避免学习 DAS、重力计时等低级操作
 > 4. 在部署时通过**路径规划器**将 placement 转换为按键序列
 
+##### Hold 动作的战略意义与训练挑战
+
+Hold（暂存）是 Tetris Guideline 规则中最具战略深度的机制，也是 RL 训练中信用分配（Credit Assignment）的极端测试案例。
+
+**战略价值**：Hold 允许将当前方块保存到暂存槽，用于后续的关键时刻。典型的高级用法包括：
+- **I 块储备**：hold I 块，等待合适的时机做 Tetris（消四行），这是人类顶尖玩家的核心策略
+- **危急保命**：当当前方块无法安全放置时，hold 换出暂存槽中更合适的方块
+- **节奏控制**：通过 hold 调整方块使用顺序，保持棋盘整洁
+
+**训练中的挑战**：hold 动作的奖励延迟是所有动作中最极端的：
+
+| 动作类型 | 典型奖励延迟 | N-step (n=5) 能否覆盖 |
+|---------|------------|---------------------|
+| 普通放置 | 1-3 步 | ✅ 可以 |
+| Tetris 准备（挖井） | 4-8 步 | ✅ 勉强覆盖 |
+| Hold I → 等待时机 → Tetris | 20-50 步 | ❌ 远远不够 |
+
+这意味着：**hold 动作的价值学习完全依赖稀疏但干净的远期奖励信号（消行得分）**。任何中间状态的惩罚——高度、孔洞、崎岖度——对 hold 的学习都是有害的，因为：
+1. Hold 前后棋盘状态完全一样，惩罚权重可能对"同一状态"给出不同评判（由于 next queue 变化），制造虚假的 TD-error
+2. Hold 的战略价值无法用任何静态棋盘特征来衡量——它的价值存在于未来的可能性空间中
+
+> **设计准则**：如果你发现自己想给奖励函数加一个惩罚项，先问"这个惩罚项能正确评判「此时 hold I 块，不放置」这个动作的价值吗？"如果答案是不能，说明这个惩罚项引入的是噪声而非信号。
+
 #### 奖励函数 \(R\)
 
 ```
@@ -785,6 +808,83 @@ Loop until convergence:
         s = s'
         if done: break
 ```
+
+#### 5.2.7 设计哲学：为什么奖励函数必须保持"干净"
+
+本节解释本项目中最重要的设计决策：**为什么惩罚权重（高度、孔洞、崎岖度、井深）必须长期保持为零**，以及为什么这不是临时诊断手段，而是一个根植于 Rainbow DQN 架构特性的永久设计选择。
+
+##### 核心矛盾：动作探索 vs. 状态评判
+
+Rainbow DQN 包含两套机制，它们作用于不同的因果层级，组合使用时存在根本性的张力：
+
+| 机制 | 作用的层级 | 探索/评判的对象 |
+|------|-----------|---------------|
+| **NoisyNets**（`agent/noisy_layers.py`） | 动作层 | "这个动作好不好？" — 通过注入噪声尝试不同的 (rotation, column, hold) 组合 |
+| **Reward Shaping**（`env/reward_calculator.py`） | 状态层 | "这个棋盘丑不丑？" — 直接对放置后的高度、孔洞、崎岖度、井深打分 |
+
+**冲突的本质**：NoisyNets 的 `sigma_init` 和学习率决定了早期探索是**动作导向的**——agent 随机尝试不同的放置方式，观察后续会发生什么。而惩罚权重会立即对放置后的**状态**给出负分，导致 agent 在还没有机会经历"挖井 → 填井 → Tetris → 高分"这条完整因果链之前，就学会了"挖井 → 负分，下次别挖了"。
+
+```python
+# agent/noisy_layers.py:47-50 — 训练时每步注入新噪声，驱动动作探索
+if self.training:
+    self._sample_noise(x.device)
+    weight = self.weight_mu + self.weight_sigma * self._eps_w
+
+# env/reward_calculator.py — 惩罚权重直接评判放置后的棋盘状态
+reward -= self.cfg.w_well * float(max_well)    # 井深惩罚
+reward -= self.cfg.w_holes * float(holes)       # 孔洞惩罚
+```
+
+这两个机制的正确关系应该是：**NoisyNets 探索动作 → 环境给出稀疏但真实的结果反馈（消行得分/死亡） → agent 自行归纳出"什么样的状态是好的"**。惩罚权重强行跳过了这个归纳过程，直接告诉 agent 答案，但这个答案是错的——因为一个深井不一定不好（可能是正在构建 Tetris 槽），一个平坦棋盘也不一定好（可能是浪费空间的低效堆叠）。
+
+##### 为什么不能"收敛后加回来"
+
+一个常见的误解是："等 agent 收敛稳定后，再把惩罚权重加回来做精调"。这在标准 DQN（ε-greedy）中可能可行，但在 Rainbow DQN 中风险极大：
+
+1. **NoisyNets 终身探索**：`sigma_decay=1.0`（`trainer/config.py:30`）意味着噪声不衰减。即使训练后期，agent 仍然会持续尝试新动作。重新引入惩罚权重 = 重新引入对探索的惩罚。
+
+2. **N-step TD 的放大效应**：`n_step=5`（`agent/dqn.py:54`）意味着一个动作的后果会被传播回前 5 个状态。`gamma^5 ≈ 0.951`，几乎不打折。惩罚信号通过 N-step 机制被放大并快速回溯，污染整条动作链的 Q 值。
+
+3. **PER 的优先重放**：TD-error 越大的 transition 被采样越多（`agent/memory.py`）。惩罚权重产生的巨大 TD-error 会挤占缓冲区，把正常的学习样本挤出重放循环。
+
+**结论**：惩罚权重不是"暂时关闭等稳定后开启"，而是"在 Rainbow DQN 架构下，它们与探索机制存在不可调和的设计冲突"。如果需要棋盘美学引导，应该在**训练完成后**通过模型 fine-tuning 或 reward shaping annealing 以极慢的速度（如 `1e-6`/步）逐步引入，而非阶段性跳变。
+
+##### Action Masking ≠ Reward Shaping
+
+项目中存在两种"过滤"机制，它们的目的和实现完全不同，不应混淆：
+
+| | Action Masking | Reward Shaping |
+|------|---------------|----------------|
+| **过滤对象** | 物理上非法的动作（碰撞检测通不过） | 策略上不美观的动作（产生孔洞、深井） |
+| **实现方式** | Q 值设为 `-1e9`，排除在 argmax 之外 | 在 reward 中加/减惩罚项 |
+| **对探索的影响** | 无负面影响（消除的是不可能动作） | **致命影响**（消除的是 agent 需要探索才能理解其价值的动作序列） |
+| **是否应该始终开启** | ✅ 是 — 永远需要 | ❌ 在 Rainbow DQN 下应保持关闭 |
+| **代码位置** | `agent/action_mask.py` | `env/reward_calculator.py` |
+
+一个典型例子：把 I 块竖着放进棋盘右侧制造一个 4 格深的井。这在物理上是完全合法的（Action Masking 不会过滤它），但会立即触发巨大的 `w_well` 惩罚。然而，如果 agent 手里有下一个 I 块，这个深井恰恰是实现 Tetris（800 × level 分）的关键步骤。惩罚权重让 agent 永远不敢做这个探索，也就永远学不会这个高级策略。
+
+##### N-step TD + NoisyNets：高效传播的双刃剑
+
+`n_step=5` 意味着当前动作的奖励信号会向前回溯 5 个状态。NoisyNets 确保 agent 持续探索新的动作序列。二者组合：
+
+| 奖励信号状态 | 组合效应 |
+|------------|---------|
+| **干净**（仅消行得分 + 死亡） | ✅ 高效传播：Tetris 的 800 分在 5 步内回溯到准备动作，加速策略学习 |
+| **脏**（含惩罚权重） | ❌ 加速崩溃：一个探索动作的惩罚在 5 步内污染整条动作链，agent 迅速学会"少动少错" |
+
+这正是预训练后分数崩溃的根本机制：Dellacherie 预训练给了一个"会下棋"的初始策略 → NoisyNets 开始探索变体 → 某些变体产生孔洞/深井 → 惩罚权重通过 N-step 回溯污染 Q 值 → agent 学到"少动少错" → 分数崩溃。
+
+**代码位置**：`agent/dqn.py:179-181`（N-step bootstrap），`agent/noisy_layers.py:47-56`（噪声注入），`agent/memory.py`（PER 优先采样高 TD-error）
+
+##### 对 Hold 动作的特别影响
+
+Hold 动作是"奖励函数必须干净"这一原则的**终极测试案例**。一个 hold-I-等待-Tetris 的决策链可能跨越 20-50 步，远超 `n_step=5` 的覆盖范围。惩罚权重无法评判"此时 hold I 块"的价值——因为 hold 本身不改变棋盘，改变的是未来的可能性。
+
+这意味着：**hold 动作的价值学习完全依赖稀疏但干净的远期奖励信号（消行得分）**。任何中间状态的惩罚——高度、孔洞、崎岖度——都不仅无助于学习 hold 的价值，反而会积极误导 agent（因为 hold 前后的棋盘状态完全一样，但惩罚权重可能在两个状态下对"同一棋盘"给出不同的评判，制造虚假的 TD-error）。
+
+> **设计准则**：如果你发现自己想加一个惩罚项，先问"这个惩罚项能正确评判 hold 动作的价值吗？"如果答案是不能，说明这个惩罚项引入的是噪声而非信号。
+
+---
 
 ### 5.3 PPO（备选算法）
 
@@ -1073,15 +1173,17 @@ Transformer 预设（Board 编码器 = BoardColumnTransformer，Pre-LN + Global 
 | `next_queue_size` | 4 | Next 队列可见长度 |
 | `max_steps` | 10000 | 单局最大步数（truncation） |
 | `use_cpp_env` | **true** | 启用 C++ pybind11 环境加速 |
-| `reward_weights.w_height` | 0.0 | 高度惩罚权重（诊断期归零） |
-| `reward_weights.w_holes` | 0.0 | 孔洞惩罚权重（诊断期归零） |
-| `reward_weights.w_bumpiness` | 0.0 | 崎岖度惩罚权重（诊断期归零） |
-| `reward_weights.w_well` | 0.0 | 井深惩罚权重（诊断期归零） |
-| `reward_weights.w_survival` | 0.01 | 存活奖励（诊断期保留） |
-| `reward_weights.w_death` | -100.0 | 死亡惩罚（诊断期保留） |
+| `reward_weights.w_height` | 0.0 | 高度惩罚权重（见 5.2.7 设计哲学） |
+| `reward_weights.w_holes` | 0.0 | 孔洞惩罚权重（见 5.2.7 设计哲学） |
+| `reward_weights.w_bumpiness` | 0.0 | 崎岖度惩罚权重（见 5.2.7 设计哲学） |
+| `reward_weights.w_well` | 0.0 | 井深惩罚权重（见 5.2.7 设计哲学） |
+| `reward_weights.w_survival` | 0.01 | 存活奖励 |
+| `reward_weights.w_death` | -100.0 | 死亡惩罚 |
 
-> ⚠️ **诊断期说明**：惩罚权重当前全部归零，仅保留消行奖励、存活奖励和死亡惩罚。
-> 这是为了排除奖励塑形导致的灾难性遗忘。收敛稳定后可逐步恢复惩罚权重。
+> ⚠️ **设计决策说明**：惩罚权重保持为零是一个**永久性设计选择**，而非临时诊断手段。
+> 根本原因在于 Rainbow DQN 架构中 NoisyNets（动作探索）与状态惩罚存在不可调和的设计冲突（详见 5.2.7 节）。
+> 惩罚权重会扼杀 agent 对高级策略（如挖井、hold-Tetris）的探索，因为这些策略在"完成"前会经过一个"看起来丑"的中间状态。
+> 当前仅保留消行得分 + 存活奖励 + 死亡惩罚，构成一个**干净的稀疏奖励函数**，由 agent 自行从结果中归纳什么是好的棋盘状态。
 
 ---
 
@@ -1354,15 +1456,15 @@ inference/cpp/
 **症状**：预训练后初始分数 ~30K，RL 训练后迅速掉到负数。
 
 **根因**（已验证）：
-1. **奖励塑形惩罚过重**：`w_holes=1.5` 等惩罚权重导致 agent 学到"快速死亡"策略来规避惩罚
-2. **学习率过高 + 硬更新间隔过长**：`lr=2.5e-4` 配合 `batch_size=256`，online 网络每步漂移大，target 冻结 8000 步后一次性覆盖，Double DQN 无法纠正
+1. **奖励塑形与 NoisyNets 探索机制的设计冲突**：`w_holes=1.5` 等惩罚权重直接评判棋盘"美观度"，而 NoisyNets 恰好在探索那些"看起来不美观但可能是高级策略前置步骤"的动作（如挖井）。agent 在经历"挖井 → 填井 → Tetris → 高分"之前，先学到了"挖井 → 扣分 → 别挖了"。详见 5.2.7 节。
+2. **N-step TD 放大效应**：`n=5` 将惩罚信号快速回溯，污染前序动作链的 Q 值。
+3. **PER 优先采样高 TD-error**：惩罚权重制造的虚假高 TD-error 挤占 replay buffer，排挤正常学习样本。
 
 **修复步骤**（按优先级）：
-1. 将 `w_height/w_holes/w_bumpiness/w_well` 全部设为 0.0（诊断期排除奖励问题）
-2. 降低学习率到 `2.5e-5`（10× 降低 → online 漂移速度 10× 降低）
-3. 缩短 `target_update_freq` 到 `4000`（减半 target 过期窗口）
-4. `sigma_init=0.01`，`sigma_decay=0.9999997`（适度衰减噪声）
-5. 确认 `batch_size=256` 配合以上参数稳定后，再逐步恢复惩罚权重
+1. 将 `w_height/w_holes/w_bumpiness/w_well` 全部设为 0.0，仅保留消行得分 + 存活奖励 + 死亡惩罚（**永久性设计选择**，非临时诊断）
+2. 降低学习率到 `2.5e-5`
+3. 使用 Polyak 软更新（`use_hard_update=false, τ=0.001`）
+4. `sigma_init=0.01`，保持 `sigma_decay=1.0`（不衰减噪声）
 
 > **硬更新 vs 软更新**：当前默认使用 **Polyak 软更新**（τ=0.001，每训练步执行）+ 周期性锚点硬同步（每 4000 步）。软更新通过 Polyak 移动平均天然避免目标网络阶跃，训练更稳定。如需切回硬更新，设 `use_hard_update: true`。
 
@@ -1486,32 +1588,32 @@ cmake --build . --target tetris_core --config Release --verbose
 
 ## 十、下一轮训练注意事项
 
-### 10.1 当前诊断配置状态
+### 10.1 当前配置状态
 
-以下为当前生效的关键参数（`trainer/config.py` 默认值，YAML 暂未接入加载流程）：
+以下为当前生效的关键参数（`trainer/config.py` 默认值）：
 
 ```yaml
 training:
   total_samples: 1_000_000_000   # → 约 15.6M env steps
 dqn:
-  lr: 2.5e-5                     # 保守学习率（10× 降低）
+  lr: 2.5e-5                     # 保守学习率
   batch_size: 256                # 大批量
   train_every: 4                 # 每 4 环境步训练一次
-  use_hard_update: false         # Soft sync (Polyak averaging every training step)
+  use_hard_update: false         # Polyak 软更新（每训练步）
   target_update_freq: 4000       # 每 4000 训练步锚点硬同步
   target_update_tau: 0.001       # 软更新系数 τ
 network:
-  model_size: "medium"           # 网络规模预设（可选 CNN/Transformer 多组）
+  model_size: "medium"           # 网络规模预设
   sigma_init: 0.01               # 保守噪声
-  sigma_decay: 0.9999997         # 每步衰减；3M 步 → 41%，15.6M → ~1%
+  sigma_decay: 1.0               # 不衰减噪声（终身探索）
 env:
   reward_weights:
-    w_height: 0.0                # 诊断期归零
+    w_height: 0.0                # 永久归零（见 5.2.7 设计哲学）
     w_holes: 0.0
     w_bumpiness: 0.0
     w_well: 0.0
-    w_survival: 0.01             # 保留
-    w_death: -100.0              # 保留
+    w_survival: 0.01             # 存活奖励
+    w_death: -100.0              # 死亡惩罚
 ```
 
 ### 10.2 训练启动
@@ -1544,22 +1646,26 @@ python scripts/train.py --device cuda --envs 64 --profile
 | **checkpoint Δ score** | 正值或小幅波动 | 持续大幅负值 |
 | **Dellacherie 对比** | agent 分数接近或超过 DL | agent 分数远低于 DL |
 
-### 10.4 恢复惩罚权重（收敛后）
+### 10.4 关于惩罚权重的设计建议
 
-当训练分数稳定后，逐步恢复惩罚权重：
+惩罚权重（`w_height`, `w_holes`, `w_bumpiness`, `w_well`）在当前 Rainbow DQN 架构下应**保持为零**。这不是临时措施，而是基于以下设计分析的决定（详见 5.2.7 节）：
 
-```yaml
-# 阶段 1：诊断（当前）— 分数 ≥30K 且稳定
-w_height: 0.0, w_holes: 0.0, w_bumpiness: 0.0, w_well: 0.0
+- **NoisyNets** 终身探索新动作，惩罚权重会扼杀高级策略（如挖井、hold-Tetris）的探索
+- **N-step TD（n=5）** 会放大惩罚信号，加速策略崩溃
+- **PER** 优先采样高 TD-error，惩罚制造的虚假高 TD-error 挤占正常学习样本
 
-# 阶段 2：轻度惩罚 — 分数持续上升
-w_height: 0.05, w_holes: 0.3, w_bumpiness: 0.05, w_well: 0.1
+如果你确实希望引入棋盘美学引导，以下是有理论支持的替代路径（按风险从低到高排列）：
 
-# 阶段 3：标准惩罚 — 分数达到 100K+
-w_height: 0.1, w_holes: 0.5, w_bumpiness: 0.1, w_well: 0.2
-```
+**路径 A：训练完成后 Fine-tune（推荐）**
+在干净奖励上充分训练到收敛 → 保存 checkpoint → 以极低的惩罚权重（如原始值的 1/100）和极低学习率（如 `lr=1e-6`）进行 fine-tune。这样可以保留已学到的策略，仅做微调。
 
-切勿直接跳回旧权重（0.3/1.5/0.2/0.5），那会导致灾难性遗忘重现。
+**路径 B：Reward Shaping Annealing（实验性）**
+从 0 开始，以 `1e-7`/步 的速率线性增加惩罚权重。监控分数变化，一旦发现下降趋势立即回退。这需要自定义 scheduler 代码。
+
+**路径 C：两阶段训练（需验证）**
+第一阶段：干净奖励训练至收敛。第二阶段：冻结部分网络层，仅用惩罚权重微调决策头。理论和实现均未在本项目中验证。
+
+> ⚠️ **核心警告**：无论选择哪条路径，都不要在训练中途通过修改 YAML/config 阶段性跳变惩罚权重。阶段跳变 = 对已学到的策略注入噪声 = 灾难性遗忘。惩罚权重的任何非零值，都是在与 NoisyNets 的探索机制对抗。在引入之前，确保你完全理解了 5.2.7 节中描述的设计冲突。
 
 ### 10.5 常见陷阱
 
@@ -1610,6 +1716,55 @@ w_height: 0.1, w_holes: 0.5, w_bumpiness: 0.1, w_well: 0.2
 | Win Rate < 50% 且 Mean Gap < 0 | ✗ 未超越，需继续训练或调参 |
 
 **设计文档**：`docs/final-eval-design.md`
+
+### 10.7 稳健性评估：压力测试
+
+10.6 节的标准 head-to-head 评估（空棋盘、同种子）衡量的是"最优条件下的性能"。但这无法检验 RL agent 相对于 Dellacherie 的**核心优势**——全局规划能力和恢复策略。
+
+Dellacherie 是贪婪算法，只做局部最优选择。给它一个烂摊子（随机填充的混乱棋盘），它没有"先把这边填平，再在那边挖井"的规划能力。RL agent 如果真正学会了通用策略，应该能在恶劣初始条件下展示出显著的恢复优势。
+
+建议增加以下三类压力测试（在标准评估完成后单独运行）：
+
+#### 测试 A：随机填充初始棋盘
+
+```
+for i in 0..199:
+    env_agent.reset(seed=i)
+    env_dl.reset(seed=i)
+
+    # 随机放置 N 个方块（双方相同的随机序列）
+    for _ in range(N_blocks):
+        action = random.choice(legal_actions)
+        env_agent.step(action)      # 不记录分数
+        env_dl.step(action)
+
+    # 从混乱状态开始正式评估
+    while not done:
+        agent: argmax → env_agent.step()
+        dl:    argmax → env_dl.step()
+```
+
+建议测试 `N_blocks ∈ {5, 10, 20}` 三种难度。
+
+#### 测试 B：故意制造深井
+
+在棋盘特定列（如第 0 列或第 9 列）预先放置方块制造 3-5 格深的井，测试 agent 是否能执行"填井策略"——这是检验模型是否真正理解了 Tetris（消四行）机制的关键测试。
+
+#### 测试 C：垃圾行注入
+
+在棋盘底部以上随机位置塞入固定数量的"垃圾行"（每行有一个随机空格），模拟对战游戏中的被攻击场景。这测试的是 agent 在极端压力下的生存能力和"收拾烂摊子"的创造性。
+
+#### 评估指标
+
+| 指标 | 标准测试 | 压力测试 |
+|------|---------|---------|
+| Win Rate vs DL | 衡量最优性能 | 衡量**鲁棒性**和**恢复能力** |
+| 预期结果 | Agent 略优 | **Agent 显著优于 DL**（差距应随 N 增大而增大）|
+| 如果结果相反 | 策略可能过拟合于"完美棋盘" | 确认了策略缺乏通用性 |
+
+> **核心理念**：如果 RL agent 在压力测试中无法显著超越 Dellacherie，说明它学到的不是通用恢复策略，而仅仅是在干净棋盘上做最优放置。这是判断模型是否真正"理解"俄罗斯方块（而非记忆最优路径）的关键检验。
+
+**代码位置**：需在 `trainer/evaluator.py` 中添加 `stress_test()` 方法和 `scripts/eval.py` 中添加 `--stress` CLI 参数。
 
 ---
 
