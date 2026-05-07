@@ -48,6 +48,29 @@ class EpsilonGreedyScheduler:
         return self.epsilon_end + (self.epsilon_start - self.epsilon_end) * math.exp(-progress * 5)
 
 
+class SigmaScheduler:
+    """Cyclic cosine annealing schedule for NoisyNet sigma.
+
+    Sigma oscillates between *sigma_max* (strong exploration at cycle start)
+    and *sigma_min* (gentle exploitation at cycle end) in a sawtooth pattern::
+
+        sigma = sigma_min + 0.5*(sigma_max - sigma_min)*(1 + cos(π * t / T))
+
+    where t = env_step % cycle_steps.
+    """
+
+    def __init__(self, sigma_max: float = 0.5, sigma_min: float = 0.05,
+                 cycle_steps: int = 500_000):
+        self.sigma_max = sigma_max
+        self.sigma_min = sigma_min
+        self.cycle_steps = cycle_steps
+
+    def get_sigma(self, env_step: int) -> float:
+        step_in_cycle = env_step % self.cycle_steps
+        cos_val = math.cos(math.pi * step_in_cycle / self.cycle_steps)
+        return self.sigma_min + 0.5 * (self.sigma_max - self.sigma_min) * (1.0 + cos_val)
+
+
 class RainbowDQN:
     """Rainbow DQN agent for placement-based Tetris."""
 
@@ -77,7 +100,9 @@ class RainbowDQN:
                  grad_clip_norm: float = 10.0,
                  use_noisy: bool = True,
                  sigma_init: float = 0.017,
-                 sigma_decay: float = 1.0,
+                 sigma_max: float = 0.5,
+                 sigma_min: float = 0.05,
+                 sigma_cycle_steps: int = 500_000,
                  exploration_type: str = "noisy",
                  epsilon_start: float = 0.5,
                  epsilon_end: float = 0.01,
@@ -95,8 +120,15 @@ class RainbowDQN:
         self.grad_clip_norm = grad_clip_norm
         self.loss_type = loss_type
         self.huber_beta = huber_beta
-        self.sigma_decay = sigma_decay
         self._last_hard_sync_step = 0
+
+        # Cyclic sigma scheduler for NoisyNet exploration.
+        self.sigma_scheduler = None
+        if use_noisy and exploration_type != "epsilon_greedy":
+            self.sigma_scheduler = SigmaScheduler(
+                sigma_max=sigma_max, sigma_min=sigma_min,
+                cycle_steps=sigma_cycle_steps,
+            )
 
         # Exploration strategy.
         self.exploration_type = exploration_type
@@ -304,12 +336,13 @@ class RainbowDQN:
                 self.target_net.load_state_dict(self.online_net.state_dict())
                 sync_event = self.train_step
 
-        # Scheduled sigma decay for NoisyLinear layers.
+        # Cyclic cosine sigma schedule for NoisyLinear layers.
         sigma_mean = 0.0
-        if self.sigma_decay < 1.0:
+        if self.sigma_scheduler is not None:
+            target_sigma = self.sigma_scheduler.get_sigma(self.env_step)
             for module in self.online_net.modules():
-                if hasattr(module, 'scale_sigma'):
-                    module.scale_sigma(self.sigma_decay)
+                if hasattr(module, 'set_sigma_scale'):
+                    module.set_sigma_scale(target_sigma)
                     sigma_mean += module.get_sigma_mean()
 
         # ---- metrics ----

@@ -40,7 +40,7 @@ class NoisyLinear(nn.Module):
         nn.init.uniform_(self.weight_mu, -bound, bound)
         nn.init.uniform_(self.bias_mu, -bound, bound)
 
-        # Sigma: initialised to small constant / sqrt(in_features).
+        # Sigma: initialised to global_scale / sqrt(in_features).
         nn.init.constant_(self.weight_sigma, sigma_init / math.sqrt(self.in_features))
         nn.init.constant_(self.bias_sigma, sigma_init / math.sqrt(self.in_features))
 
@@ -72,6 +72,18 @@ class NoisyLinear(nn.Module):
         with torch.no_grad():
             self.weight_sigma.mul_(factor)
             self.bias_sigma.mul_(factor)
+
+    def set_sigma_scale(self, target_sigma: float):
+        """Reset sigma parameters to *target_sigma* (global scale).
+
+        Each parameter is set to target_sigma / sqrt(in_features), matching
+        the NoisyLinear initialisation convention.  Previous learned sigma
+        structure is overwritten — this is intentional for sawtooth schedules.
+        """
+        per_param = target_sigma / math.sqrt(self.in_features)
+        with torch.no_grad():
+            self.weight_sigma.fill_(per_param)
+            self.bias_sigma.fill_(per_param)
 
     def get_sigma_mean(self) -> float:
         """Return the mean absolute sigma value (for logging)."""

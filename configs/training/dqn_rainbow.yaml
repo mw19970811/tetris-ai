@@ -66,12 +66,14 @@ network:
   num_actions: 112
 
   # Exploration: "noisy" (NoisyNets) or "epsilon_greedy" (ε-greedy + warmup)
-  exploration_type: "epsilon_greedy"
+  exploration_type: "noisy"
 
-  # NoisyNets params (only used when exploration_type == "noisy")
+  # NoisyNets params — cyclic cosine (sawtooth) sigma schedule
   use_noisy: true
-  sigma_init: 0.01            # NoisyNet initial noise (conservative)
-  sigma_decay: 0.9999997      # Per-step sigma decay; ~41% at 3M, ~1% at 15.6M
+  sigma_init: 0.5             # Reference sigma for NoisyLinear initialisation
+  sigma_max: 0.5              # Sigma at cycle peak (strong exploration reset)
+  sigma_min: 0.05             # Sigma at cycle trough (gentle exploitation)
+  sigma_cycle_steps: 500_000  # Env steps per full cosine cycle
 
   # ε-greedy params (only used when exploration_type == "epsilon_greedy")
   epsilon_start: 0.5           # ε after warmup ends

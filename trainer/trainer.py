@@ -168,7 +168,9 @@ class Trainer:
                 grad_clip_norm=self.cfg.dqn.grad_clip_norm,
                 use_noisy=self.cfg.network.use_noisy,
                 sigma_init=self.cfg.network.sigma_init,
-                sigma_decay=self.cfg.network.sigma_decay,
+                sigma_max=self.cfg.network.sigma_max,
+                sigma_min=self.cfg.network.sigma_min,
+                sigma_cycle_steps=self.cfg.network.sigma_cycle_steps,
                 exploration_type=self.cfg.network.exploration_type,
                 epsilon_start=self.cfg.network.epsilon_start,
                 epsilon_end=self.cfg.network.epsilon_end,
@@ -816,12 +818,15 @@ class Trainer:
             sigma_init = self.cfg.network.sigma_init
             for key, tensor in state_dict.items():
                 is_noisy = use_noisy_model and any(key.startswith(p) for p in noisy_prefixes)
+                # Match NoisyLinear init: sigma = global_scale / sqrt(in_features).
                 if is_noisy and key.endswith('.weight'):
+                    in_f = tensor.size(1)
                     converted[key.replace('.weight', '.weight_mu')] = tensor
-                    converted[key.replace('.weight', '.weight_sigma')] = torch.full_like(tensor, sigma_init)
+                    converted[key.replace('.weight', '.weight_sigma')] = torch.full_like(tensor, sigma_init / (in_f ** 0.5))
                 elif is_noisy and key.endswith('.bias'):
+                    in_f = tensor.size(0)
                     converted[key.replace('.bias', '.bias_mu')] = tensor
-                    converted[key.replace('.bias', '.bias_sigma')] = torch.full_like(tensor, sigma_init)
+                    converted[key.replace('.bias', '.bias_sigma')] = torch.full_like(tensor, sigma_init / (in_f ** 0.5))
                 else:
                     converted[key] = tensor
 
@@ -942,7 +947,9 @@ def _print_config(config: TrainingConfig, args):
     print(_kv("exploration_type", net.exploration_type))
     print(_kv("use_noisy", net.use_noisy))
     print(_kv("sigma_init", net.sigma_init))
-    print(_kv("sigma_decay", net.sigma_decay))
+    print(_kv("sigma_max", net.sigma_max))
+    print(_kv("sigma_min", net.sigma_min))
+    print(_kv("sigma_cycle_steps", f"{net.sigma_cycle_steps:,}"))
     if net.exploration_type == "epsilon_greedy":
         print(_kv("epsilon_start", net.epsilon_start))
         print(_kv("epsilon_end", net.epsilon_end))

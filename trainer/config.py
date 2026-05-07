@@ -36,8 +36,10 @@ class NetworkConfig:
     # Exploration: "noisy" (NoisyNets) or "epsilon_greedy" (ε-greedy + warmup)
     exploration_type: str = "noisy"
     use_noisy: bool = True
-    sigma_init: float = 0.01  # Lower initial noise for conservative exploration
-    sigma_decay: float = 0.9999997  # Per-step σ decay; → ~41% at 3M, ~9% at 8M, ~1% at 15.6M
+    sigma_init: float = 0.5  # Reference sigma for NoisyLinear initialisation
+    sigma_max: float = 0.5   # Sigma at cycle peak (strong exploration reset)
+    sigma_min: float = 0.05  # Sigma at cycle trough (gentle exploitation)
+    sigma_cycle_steps: int = 500_000  # Env steps per full cosine cycle (sawtooth)
     # ε-greedy params (only used when exploration_type == "epsilon_greedy")
     epsilon_start: float = 0.5        # ε after warmup ends
     epsilon_end: float = 0.01         # Minimum ε (retain 1% exploration)
